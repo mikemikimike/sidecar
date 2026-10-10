@@ -835,7 +835,8 @@ describe('executeTool', () => {
       expect(String(confirm.mock.calls[0][0])).toMatch(/install \**typescript/i);
       expect(executor).not.toHaveBeenCalled();
       expect(result.is_error).toBe(true);
-      expect(String(result.content)).toMatch(/The user declined installing typescript.*Do not install it/s);
+      expect(String(result.content)).toMatch(/The user declined installing typescript.*Do not install it another way/s);
+      expect(String(result.content)).toMatch(/which checker is missing/);
     });
 
     // Background agents, scheduled tasks and the MCP agent server run
@@ -862,16 +863,29 @@ describe('executeTool', () => {
       expect(executor).toHaveBeenCalled();
     });
 
-    it('does not ask about other commands in autonomous mode', async () => {
+    it('asks before any new package in autonomous mode, saying what it is', async () => {
       const executor = vi.fn().mockResolvedValue('ok');
       runCommandTool(executor);
-      const confirm = vi.fn();
-      await executeTool(makeToolUse('run_command', { command: 'npm install express' }), {
+      const confirm = vi.fn().mockResolvedValue('Deny');
+      const result = await executeTool(makeToolUse('run_command', { command: 'npm install express' }), {
         approvalMode: 'autonomous',
         confirmFn: confirm,
       });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(String(confirm.mock.calls[0][0])).toMatch(/install \**express/i);
+      expect(executor).not.toHaveBeenCalled();
+      expect(String(result.content)).toMatch(/leave the install to the user/);
+    });
+
+    it("does not ask about restoring the project's declared dependencies, or other commands", async () => {
+      const executor = vi.fn().mockResolvedValue('ok');
+      runCommandTool(executor);
+      const confirm = vi.fn();
+      for (const command of ['npm ci', 'npm install', 'pip install -r requirements.txt', 'npm test', 'ls src']) {
+        await executeTool(makeToolUse('run_command', { command }), { approvalMode: 'autonomous', confirmFn: confirm });
+      }
       expect(confirm).not.toHaveBeenCalled();
-      expect(executor).toHaveBeenCalled();
+      expect(executor).toHaveBeenCalledTimes(5);
     });
   });
 
