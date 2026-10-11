@@ -321,12 +321,14 @@ export async function editWouldBreakSyntax(
  * as an escaped string. Every attempt was correctly refused by the guard and
  * the run died with the model's code complete but undeliverable.
  *
- * The parse gate is what makes blanket decoding safe: decoding a legitimate
- * in-string `"a\nb"` escape puts a real newline inside a quoted literal, which
- * fails to parse in Python/JS strings — so a harmful decode rejects itself.
- * (Triple-quoted / template literals accept the newline but render the same
- * string, so the survivors are semantics-preserving.) No positive parse, no
- * rescue; unchecked grammars never rescue.
+ * Only escapes OUTSIDE string literals are decoded (#158). The parse gate was
+ * once thought to make blanket decoding safe -- a real newline inside a "..."
+ * literal "fails to parse" -- but tree-sitter's Python grammar accepts it while
+ * CPython rejects it, so a legitimate `print("\nUsage")` was decoded into a
+ * file CPython will not compile (ML-29). An escape inside a string is a real
+ * escape, and an escaped backslash (`"\\n"`) is not an escape at all (ML-17).
+ * Decoded line breaks use the file's own line ending: a CRLF file got bare
+ * LFs (ML-35). No positive parse, no rescue; unchecked grammars never rescue.
  */
 export async function tryLiteralEscapeRecovery(
   filePath: string,
@@ -350,8 +352,17 @@ export async function tryLiteralEscapeRecovery(
   }
   const changed = after.slice(pre, after.length - suf);
   if (!/\\[nt]/.test(changed)) return null;
-  const normalized =
-    after.slice(0, pre) + changed.replace(/\\n/g, '\n').replace(/\\t/g, '\t') + after.slice(after.length - suf);
+  const eol = /\r\n/.test(before) && !/(?<!\r)\n/.test(before) ? '\r\n' : '\n';
+  // Lex from the start of the line the change begins on, so a string the edit
+  // starts inside of is seen as a string.
+  const lineStart = after.lastIndexOf('\n', pre - 1) + 1;
+  const decoded = decodeEscapesOutsideStrings(
+    after.slice(lineStart, after.length - suf),
+    eol,
+    commentTokenFor(filePath),
+    pre - lineStart, // the unchanged start of the line is lexed, not decoded
+  );
+  const normalized = after.slice(0, lineStart) + decoded + after.slice(after.length - suf);
   if (normalized === after) return null;
   // The decode must not UNDO the edit. When an edit's whole purpose is to put a
   // literal `\n` into source — code that manipulates escape sequences, which is
@@ -372,6 +383,72 @@ export async function tryLiteralEscapeRecovery(
   const beforeCheck = await checkSyntax(filePath, before);
   if (!beforeCheck.checked) return null;
   return normCheck.errorCount <= beforeCheck.errorCount ? normalized : null;
+}
+
+/** The line-comment introducer for a file, for the escape decoder's lexer. */
+function commentTokenFor(filePath: string): string {
+  return /\.(py|pyi|rb|sh|bash|zsh|r|pl|yaml|yml|toml)$/i.test(filePath) ? '#' : '//';
+}
+
+/**
+ * Decode literal `\n` / `\t` escapes that sit OUTSIDE string literals into a
+ * real line break (`eol`) / tab. Inside "...", '...', `...` and triple-quoted
+ * strings an escape is left exactly as written; `\\` is consumed as a pair so
+ * an escaped backslash never starts an escape. Comments are tracked so an
+ * apostrophe in `# don't` does not open a string; a `\n` inside a comment ends
+ * it -- that is the line break the contaminated text lost. Escapes before
+ * `decodeFrom` are read for lexer state only and kept as written.
+ */
+export function decodeEscapesOutsideStrings(text: string, eol: string, commentToken: string, decodeFrom = 0): string {
+  let out = '';
+  let quote: string | null = null; // the delimiter of the string we are in: ", ', `, """ or '''
+  let inComment = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\n') {
+      out += c;
+      inComment = false;
+      if (quote !== null && quote.length === 1 && quote !== '`') quote = null; // single-line strings end here
+      continue;
+    }
+    if (c === '\\') {
+      const next = text[i + 1];
+      if (quote === null && i >= decodeFrom && (next === 'n' || next === 't')) {
+        out += next === 'n' ? eol : '\t';
+        if (next === 'n') inComment = false;
+        i++;
+        continue;
+      }
+      // Inside a string, or any other escape: keep the pair as written, so `\\`
+      // and `\"` never start or end anything.
+      out += c + (next ?? '');
+      i++;
+      continue;
+    }
+    out += c;
+    if (inComment) continue;
+    if (quote !== null) {
+      if (text.startsWith(quote, i)) {
+        out += quote.slice(1);
+        i += quote.length - 1;
+        quote = null;
+      }
+      continue;
+    }
+    if (text.startsWith(commentToken, i)) {
+      inComment = true;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const triple = c !== '`' && text.startsWith(c.repeat(3), i);
+      quote = triple ? c.repeat(3) : c;
+      if (triple) {
+        out += c.repeat(2);
+        i += 2;
+      }
+    }
+  }
+  return out;
 }
 
 /** Test seam: inject a parser (or null) for a grammar without touching disk. */
