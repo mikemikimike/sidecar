@@ -44,3 +44,20 @@ describe('insert API V2 prompt variant', () => {
     expect(p).not.toContain('new_text');
   });
 });
+
+// Rule 10 said "After fixing bugs, call run_tests" with no stop: in a project
+// without tests, models built a test setup to have something to run (#170).
+describe('rule 10 in a project without tests', () => {
+  it('stops at a "no tests" result instead of building a test setup', () => {
+    const prompt = buildBaseSystemPrompt({
+      isLocal: true,
+      extensionVersion: '0.0.0',
+      repoUrl: '',
+      docsUrl: '',
+      root: '/w',
+      approvalMode: 'autonomous',
+    });
+    expect(prompt).toMatch(/if it reports the project has no tests, stop there/);
+    expect(prompt).toMatch(/do not write tests or install a test framework to have something to run/);
+  });
+});

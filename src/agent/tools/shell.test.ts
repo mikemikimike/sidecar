@@ -214,6 +214,20 @@ describe('shell tool runtime resolution', () => {
       (workspace.findFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
       const out = await runTests({});
       expect(out).toContain('Could not detect test runner');
+      expect(out).toContain('Do not write test files or install a test framework');
+    });
+
+    // Told only "no runner", models built one: ad-hoc test files, `npm init -y
+    // && npm install jest`, then a dozen edits to them (#170). The result says
+    // the check that can run is the last step.
+    it('in a TypeScript project with no tests, says the compiler check is the last step', async () => {
+      (workspace.findFiles as ReturnType<typeof vi.fn>).mockImplementation(async (glob: string) =>
+        /\{ts,tsx\}/.test(glob) ? [{ fsPath: '/mock/src/a.ts' }] : [],
+      );
+      const out = await runTests({});
+      expect(out).toContain('npx tsc --noEmit');
+      expect(out).toContain('There are no tests to run here');
+      expect(out).toMatch(/once that check passes, the change is done/);
     });
   });
 
