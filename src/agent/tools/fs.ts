@@ -1672,6 +1672,11 @@ export async function resolveEditedText(params: {
     // whole-file fallback gets the chance it was written for.
     try {
       anchorAt = resolveWithin(text, within, filePath);
+      // Slice at the start of the locator's line. Sliced at the locator
+      // itself, a mid-line `within` made offset 0 look like a line start:
+      // the exact match was lost and the indent tier de-indented the edit
+      // (ML-23).
+      anchorAt = text.lastIndexOf('\n', anchorAt - 1) + 1;
     } catch (err) {
       locatorError = err as Error;
     }
@@ -1679,10 +1684,11 @@ export async function resolveEditedText(params: {
 
   // With an unresolved locator there is no anchor to slice from, so measure
   // against the whole file and let the deferred check below decide.
+  const matchOptions = { rebaseColumnZero: /\.pyi?$/i.test(filePath) };
   let match =
     within && !locatorError
-      ? findEditMatch(text.slice(anchorAt), search, replace)
-      : findEditMatch(text, search, replace);
+      ? findEditMatch(text.slice(anchorAt), search, replace, matchOptions)
+      : findEditMatch(text, search, replace, matchOptions);
 
   /**
    * `within` exists to pick ONE of several candidate locations. When `search`
@@ -1704,7 +1710,7 @@ export async function resolveEditedText(params: {
    */
   let anchorRedundant = false;
   const fallBackToWholeFile = (): boolean => {
-    const whole = findEditMatch(text, search, replace);
+    const whole = findEditMatch(text, search, replace, matchOptions);
     if (!whole || whole.count !== 1) return false;
     match = whole;
     anchorAt = 0; // so the re-base below is a no-op on an already whole-file span
@@ -1899,7 +1905,18 @@ export async function resolveEditedText(params: {
     // `greeting`) is a different name and is left alone, and the result must
     // parse and must not shadow a top-level definition.
     if (replaceAll) {
-      const all = findEditMatches(text, search, replace);
+      const all = findEditMatches(text, search, replace, matchOptions);
+      // Occurrences that overlap (`x/m/x` in `x/m/x/m/x`, one per line) cannot
+      // all be replaced; changing some while reporting all would misstate the
+      // edit (ML-28).
+      if (match.count > all.length) {
+        recordEditFailure(context, filePath, search, replace);
+        throw new Error(
+          `${unreadPrefix}Error: edit_file refused this edit to ${filePath} — your search occurs ${match.count} ` +
+            `times, and some of those occurrences overlap, so replace_all cannot change each one. The file was NOT ` +
+            `modified. Search for text that does not overlap itself, or make the edits one at a time with 'within'.`,
+        );
+      }
       const whole = all.filter((m) => tokenSplit(text, m.start, m.end) === null);
       const inWords = all.length - whole.length;
       if (whole.length === 0) {
