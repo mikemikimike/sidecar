@@ -147,16 +147,15 @@ describe('findEditMatch — indentation', () => {
   });
 
   it('shifts left when the model over-indents, preserving relative nesting', () => {
-    // The rule is a SHIFT, not a re-tabulation: the anchor line is re-based onto
-    // the file's indentation and every other line moves by the same delta. The
-    // replacement's internal nesting (here 4 spaces deeper than its anchor) is
-    // preserved as-is. Converting indent WIDTH — 4-space nesting into the file's
-    // 2-space — would mean inferring the file's indent unit and rewriting every
-    // level, which is far more invasive and gets Python wrong in more ways than
-    // it fixes. Python allows per-block widths, so the shifted result is valid.
+    // Each level maps to the file's indentation for THAT level, read from the
+    // lines the match aligned: the search's 4 and 8 sit on the file's 0 and 2,
+    // so the body is written at 2. This was a single shift by the first line's
+    // delta (body at 4), which kept the search's nesting rather than the file's
+    // and, when the search's nesting disagreed with the file's, wrote code into
+    // the wrong block (#159, ML-03 / ML-22).
     const flat = 'def f():\n  return 1\n';
     const out = apply(flat, '    def f():\n        return 1', '    def f():\n        return 2')!;
-    expect(out).toBe('def f():\n    return 2\n');
+    expect(out).toBe('def f():\n  return 2\n');
   });
 
   it('does not add indentation to blank lines', () => {
