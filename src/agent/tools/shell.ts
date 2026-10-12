@@ -396,13 +396,18 @@ export async function runTests(input: Record<string, unknown>, context?: ToolExe
       // pytest against a TypeScript-only workspace, and the whole fleet burned
       // iterations chasing runners that cannot exist
       // (replace-todo-body-with-implementation, 2026-08-07). Point at a check
-      // that CAN run here, or say plainly that none exists.
+      // that CAN run here, or say plainly that none exists. And say that the
+      // answer is final: told only "no runner", models built one -- ad-hoc
+      // test files, `npm init -y && npm install jest` -- and spent most of a
+      // run editing them (#170).
       const tsFiles = await workspace.findFiles('**/*.{ts,tsx}', '**/node_modules/**', 1);
       if (tsFiles.length > 0) {
         return (
           'Could not detect test runner: no test script, config, or test files exist in this workspace. ' +
           'For these TypeScript sources the available check is the compiler — run_command with `npx tsc --noEmit`. ' +
-          'Do not guess at npm test or pytest here; neither is configured.'
+          'Do not guess at npm test or pytest here; neither is configured. ' +
+          'There are no tests to run here. Do not write test files, add a test script or install a test framework ' +
+          'to create some: once that check passes, the change is done, untested beyond it -- say so.'
         );
       }
       const pyFiles = await workspace.findFiles('**/*.py', '**/node_modules/**', 1);
@@ -410,12 +415,15 @@ export async function runTests(input: Record<string, unknown>, context?: ToolExe
         return (
           'Could not detect test runner: no test files or config exist in this workspace. ' +
           'For these Python sources the available check is the interpreter — run_command with `python3 -m py_compile <file>` ' +
-          'or run the script directly. Do not guess at npm test here.'
+          'or run the script directly. Do not guess at npm test here. ' +
+          'There are no tests to run here. Do not write test files, add a test script or install a test framework ' +
+          'to create some: once that check passes, the change is done, untested beyond it -- say so.'
         );
       }
       return (
         'Could not detect test runner, and this workspace has no test files or config. ' +
-        'If tests exist elsewhere, specify the command explicitly; otherwise state that no automated check is available.'
+        'If tests exist elsewhere, specify the command explicitly; otherwise state that no automated check is available. ' +
+        'Do not write test files or install a test framework to create one.'
       );
     }
   }
