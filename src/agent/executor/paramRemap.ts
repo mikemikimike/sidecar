@@ -49,6 +49,15 @@ export interface ParamRemapOutcome {
  * bounced on 'must be an array, got string' until the run cycle-bailed —
  * the intent was never ambiguous.
  */
+/**
+ * String params holding multi-line text, where an array of strings has one
+ * meaning -- one line per element. Models send edit_file's search/replace as
+ * line arrays (ministral-3: 5 calls in a week of eval runs, each bounced with
+ * "must be a string, got array"). Other string params (a path, a command) are
+ * left to the validator: joining those would only hide a malformed call.
+ */
+const MULTILINE_TEXT_PARAMS = new Set(['search', 'replace', 'within', 'content']);
+
 export function coerceParamTypes(input: unknown, schema: ToolInputSchema | undefined): ParamRemapOutcome {
   const obj = input as Record<string, unknown>;
   if (!schema || schema.type !== 'object' || !obj || typeof obj !== 'object' || Array.isArray(obj)) {
@@ -59,6 +68,20 @@ export function coerceParamTypes(input: unknown, schema: ToolInputSchema | undef
   for (const [key, rawSpec] of Object.entries(schema.properties ?? {})) {
     const declared = (rawSpec as { type?: string }).type;
     const value = obj[key];
+    if (
+      declared === 'string' &&
+      MULTILINE_TEXT_PARAMS.has(key) &&
+      Array.isArray(value) &&
+      value.length > 0 &&
+      value.every((v) => typeof v === 'string')
+    ) {
+      out ??= { ...obj };
+      out[key] = value.join('\n');
+      notes.push(
+        `parameter '${key}' expects a string — the array of ${value.length} lines was joined with line breaks`,
+      );
+      continue;
+    }
     if (declared !== 'array' || typeof value !== 'string') continue;
     let coerced: unknown[] = [value];
     const trimmed = value.trim();
