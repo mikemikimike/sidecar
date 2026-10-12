@@ -58,6 +58,39 @@ export interface ParamRemapOutcome {
  */
 const MULTILINE_TEXT_PARAMS = new Set(['search', 'replace', 'within', 'content']);
 
+/**
+ * The text a model's tokenizer uses for a carriage return it read, echoed back
+ * as seven literal characters (#155, ML-02). gemma4:e4b reads a CRLF file and
+ * writes `<0x0D>` wherever it saw `\r`: a search carrying it never matches
+ * (0 of 1,221 such multi-line searches wrote, on the SWE canary), and in
+ * `replace` it is written into the file. Only the shape that IS a carriage
+ * return is removed -- the token right before a line break or at the very end;
+ * the line-ending tiers then match and write the file's own line endings. A
+ * file that mentions `<0x0D>` mid-line keeps it.
+ */
+const ECHOED_CR = /<0x0D>(?=\r?\n|$)/g;
+
+/** Remove echoed carriage-return tokens from the multi-line text params, disclosing each. */
+export function stripEchoedCarriageReturns(input: unknown): ParamRemapOutcome {
+  const obj = input as Record<string, unknown>;
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { input: obj, notes: [] };
+  let out: Record<string, unknown> | null = null;
+  const notes: string[] = [];
+  for (const key of MULTILINE_TEXT_PARAMS) {
+    const value = obj[key];
+    if (typeof value !== 'string' || !value.includes('<0x0D>')) continue;
+    const cleaned = value.replace(ECHOED_CR, '');
+    if (cleaned === value) continue;
+    out ??= { ...obj };
+    out[key] = cleaned;
+    notes.push(
+      `'${key}' contained the literal text <0x0D> at line ends — that is how a carriage return reads to you; it ` +
+        `was removed (line endings are matched and written in the file's own style, so leave them out)`,
+    );
+  }
+  return { input: out ?? obj, notes };
+}
+
 export function coerceParamTypes(input: unknown, schema: ToolInputSchema | undefined): ParamRemapOutcome {
   const obj = input as Record<string, unknown>;
   if (!schema || schema.type !== 'object' || !obj || typeof obj !== 'object' || Array.isArray(obj)) {
