@@ -198,7 +198,9 @@ export async function executeTool(
     toolUse.input = typeCoercion.input;
     remap.notes.push(...typeCoercion.notes);
   }
-  if (toolUse.name === 'edit_file' || toolUse.name === 'write_file') {
+  // EXPERIMENT ARM SWITCH (exp/cr-token-ab only, not for merge): SIDECAR_CR_TOKEN=off
+  // runs the control arm of the #155 canary A/B, with the token left as sent.
+  if ((toolUse.name === 'edit_file' || toolUse.name === 'write_file') && process.env.SIDECAR_CR_TOKEN !== 'off') {
     const cr = stripEchoedCarriageReturns(toolUse.input);
     if (cr.notes.length > 0) {
       logger?.info(`Tool ${toolUse.name}: ${cr.notes.join('; ')}`);
