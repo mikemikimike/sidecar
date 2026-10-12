@@ -18,6 +18,7 @@ import { isAuditModeActive } from './auditHelper.js';
 import { getAuditDecorationProvider } from '../../testing/auditDecorations.js';
 import { computeLineDiff } from './diffUtils.js';
 import { editWouldBreakSyntax, canParseSyntax, tryLiteralEscapeRecovery } from './syntaxCheck.js';
+import { findSkippedLinesMatch, skippedLinesError } from './skippedLines.js';
 import {
   findEditMatch,
   findEditMatches,
@@ -1843,6 +1844,15 @@ export async function resolveEditedText(params: {
           suffixNote: '',
         };
       }
+    }
+
+    // Every search line is in the file, in order, but the search left out a
+    // line between two of them (usually a comment or blank line). The region
+    // is certain here, so name it and the skipped lines, instead of guessing.
+    const skipped = findSkippedLinesMatch(text, search);
+    if (skipped) {
+      recordEditFailure(context, filePath, search, replace);
+      throw new Error(`${stalePrefix}${unreadPrefix}${skippedLinesError(filePath, skipped)}`);
     }
 
     const suggestTarget = findIntentTarget(text, replace, 0.4, SUGGEST_MARGIN);

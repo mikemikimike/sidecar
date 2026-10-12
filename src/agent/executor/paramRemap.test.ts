@@ -214,3 +214,28 @@ describe('V2 insert convention protection (campaign 5 regression)', () => {
     expect(notes.length).toBe(1);
   });
 });
+
+// ministral-3 sent edit_file's search/replace as arrays of lines (5 calls in a
+// week of eval runs), each bounced with "must be a string, got array".
+describe('coerceParamTypes — line arrays for multi-line text', () => {
+  const editSchema = {
+    type: 'object' as const,
+    properties: { path: { type: 'string' }, search: { type: 'string' }, replace: { type: 'string' } },
+    required: ['path', 'search', 'replace'],
+  };
+
+  it('joins an array of strings with line breaks, and says so', () => {
+    const r = coerceParamTypes({ path: 'a.ts', search: ['a', '  b'], replace: ['a', '  c'] }, editSchema);
+    expect(r.input).toEqual({ path: 'a.ts', search: 'a\n  b', replace: 'a\n  c' });
+    expect(r.notes).toEqual([
+      "parameter 'search' expects a string — the array of 2 lines was joined with line breaks",
+      "parameter 'replace' expects a string — the array of 2 lines was joined with line breaks",
+    ]);
+  });
+
+  it('leaves a non-text string param, a mixed array and an empty array to the validator', () => {
+    const r = coerceParamTypes({ path: ['a.ts'], search: ['a', 1], replace: [] }, editSchema);
+    expect(r.input).toEqual({ path: ['a.ts'], search: ['a', 1], replace: [] });
+    expect(r.notes).toEqual([]);
+  });
+});
