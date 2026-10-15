@@ -51,6 +51,22 @@ describe('executeTool', () => {
     expect(result.content).toContain('Unknown tool');
   });
 
+  it('a withheld call returns its reason and never runs, or asks for approval (#164 ML-15)', async () => {
+    const executor = vi.fn().mockResolvedValue('written');
+    mockedFindTool.mockReturnValue({
+      definition: { name: 'write_file', description: '', input_schema: { type: 'object', properties: {} } },
+      executor,
+      requiresApproval: true,
+    });
+    const result = await executeTool(
+      { ...makeToolUse('write_file', { path: 'a.txt', content: 'x' }), _withheldReason: 'Not run: cut off' },
+      { confirmFn: mockConfirm },
+    );
+    expect(result).toEqual({ type: 'tool_result', tool_use_id: 'test_1', content: 'Not run: cut off', is_error: true });
+    expect(executor).not.toHaveBeenCalled();
+    expect(mockConfirm).not.toHaveBeenCalled();
+  });
+
   it('salvages a mangled call-expression tool name and dispatches the base tool', async () => {
     // Some runtimes (Ollama's qwen3.5 parser) yield name=`read_file(path="…")`
     // with empty args. The base name must resolve and recover its arguments.

@@ -100,4 +100,21 @@ describe('repairMalformedToolUses', () => {
     });
     await expect(repairMalformedToolUses([tu], deps({ complete }))).rejects.toThrow('aborted');
   });
+
+  it('skips a withheld call: neither tier runs on a call that will not run (#164 ML-15)', async () => {
+    const complete = vi.fn(async () => '{"path": "a.ts"}');
+    const tu = { ...malformed('read_file', '{"path": "a.ts'), _withheldReason: 'cut off' };
+    expect(await repairMalformedToolUses([tu], deps({ complete }))).toBe(0);
+    expect(tu.input).toEqual({});
+    expect(tu._malformedInputRaw).toBe('{"path": "a.ts');
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('does not close a regeneration cut off at its own token cap (#164 ML-15)', async () => {
+    // Tier 1 fails (not JSON at all); tier 2 returns an object cut off mid-string.
+    const complete = vi.fn(async () => '{"path": "src/very/long/pa');
+    const tu = malformed('read_file', 'read the file please');
+    expect(await repairMalformedToolUses([tu], deps({ complete }))).toBe(0);
+    expect(tu._malformedInputRaw).toBe('read the file please');
+  });
 });

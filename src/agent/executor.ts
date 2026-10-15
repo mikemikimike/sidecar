@@ -148,6 +148,14 @@ export async function executeTool(
 
   const bounceCounts = executorContext?.bounceCounts;
 
+  // --- A call the loop withheld never runs (#164 ML-15) ---
+  // Its turn was cut off mid-call or its stream never finished; the reason
+  // says which and how to re-issue it.
+  if (toolUse._withheldReason !== undefined) {
+    logger?.warn(`Tool ${toolUse.name} withheld: ${toolUse._withheldReason}`);
+    return { type: 'tool_result', tool_use_id: toolUse.id, content: toolUse._withheldReason, is_error: true };
+  }
+
   if (!tool) {
     const bounces = recordBounce(bounceCounts, toolUse.name, 'unknown-tool');
     return {

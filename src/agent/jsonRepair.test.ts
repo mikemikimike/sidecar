@@ -180,3 +180,16 @@ describe('tryJsonRepair', () => {
     expect(tryJsonRepair(raw)).toEqual({ path: 'a.ts', replace: '  }' });
   });
 });
+
+describe('tryJsonRepair closeTruncated: false (#164 ML-15)', () => {
+  it('does not close an unterminated string or object -- that is a cut-off, not a fumble', () => {
+    const cut = '{"path": "README.md", "content": "# Title\nfirst section';
+    expect(tryJsonRepair(cut)).toEqual({ path: 'README.md', content: '# Title\nfirst section' });
+    expect(tryJsonRepair(cut, { closeTruncated: false })).toBeNull();
+  });
+
+  it('still makes the syntax repairs that do not add a closer', () => {
+    expect(tryJsonRepair("{path: 'a.ts',}", { closeTruncated: false })).toEqual({ path: 'a.ts' });
+    expect(tryJsonRepair('```json\n{"path": "a.ts"}\n```', { closeTruncated: false })).toEqual({ path: 'a.ts' });
+  });
+});

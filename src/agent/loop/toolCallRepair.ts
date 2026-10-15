@@ -75,7 +75,10 @@ export async function repairMalformedToolUses(
   let repaired = 0;
   for (const tu of toolUses) {
     const raw = tu._malformedInputRaw;
-    if (raw === undefined) continue;
+    // A withheld call (cut off, or from a stream that never finished) is not
+    // run, so it is not repaired either: closing it is what turned a cut-off
+    // write into a complete-looking shorter one (#164 ML-15).
+    if (raw === undefined || tu._withheldReason !== undefined) continue;
 
     // Tier 1 — heuristic repair (no model round-trip).
     const repairedRaw = tryJsonRepair(raw);
@@ -105,7 +108,10 @@ export async function repairMalformedToolUses(
         deps.signal,
         schema,
       );
-      const fixed = parseObject(out) ?? tryJsonRepair(out);
+      // Never close an unterminated regeneration: it is capped at 512 tokens,
+      // so an unbalanced result was cut off there, and closing it applied the
+      // shortened arguments (#164 ML-15).
+      const fixed = parseObject(out) ?? tryJsonRepair(out, { closeTruncated: false });
       if (fixed) {
         applyRepair(tu, fixed);
         deps.logger?.info?.(`Repaired malformed args for \`${tu.name}\` (schema-constrained regeneration)`);
