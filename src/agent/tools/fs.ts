@@ -28,6 +28,14 @@ import {
   type MatchTier,
 } from './editMatch.js';
 import { delimiterBalance, balanceEquals } from '../delimiters.js';
+import {
+  decodeFile,
+  encodeFile,
+  unencodableChars,
+  unencodableMessage,
+  UTF8,
+  type FileEncoding,
+} from './fileEncoding.js';
 
 /**
  * Read buffered content for a workspace-relative path if Audit Mode
@@ -39,10 +47,17 @@ async function readDiskViaWorkspace(
   context: ToolExecutorContext | undefined,
   relPath: string,
 ): Promise<string | undefined> {
+  return (await readDiskWithEncoding(context, relPath))?.text;
+}
+
+/** The file's text and the encoding it was read in (see fileEncoding.ts), or undefined when it cannot be read. */
+async function readDiskWithEncoding(
+  context: ToolExecutorContext | undefined,
+  relPath: string,
+): Promise<{ text: string; encoding: FileEncoding } | undefined> {
   try {
     const fileUri = Uri.joinPath(resolveRootUri(context), relPath);
-    const bytes = await workspace.fs.readFile(fileUri);
-    return Buffer.from(bytes).toString('utf-8');
+    return decodeFile(await workspace.fs.readFile(fileUri));
   } catch {
     return undefined;
   }
@@ -784,7 +799,8 @@ export async function readFile(input: Record<string, unknown>, context?: ToolExe
         `do not search for the filename you guessed.`,
     );
   }
-  const text = Buffer.from(bytes).toString('utf-8');
+  // Decoded as the edit will decode it, so a search copied from this read matches.
+  const { text } = decodeFile(bytes);
   // Track this file as read so editFile knows the model has current content.
   const readKey = path.posix.normalize(filePath.split(path.sep).join('/'));
   context?.filesReadThisTurn?.add(readKey);
@@ -1036,7 +1052,21 @@ export async function writeFile(input: Record<string, unknown>, context?: ToolEx
   // Read the original ONCE — the syntax guard, the edit timeline, and the
   // streaming diff all need it, and a second read would consume a different
   // snapshot (and, in tests, a different mock).
-  const original = await readDiskViaWorkspace(context, filePath);
+  const existing = await readDiskWithEncoding(context, filePath);
+  const original = existing?.text;
+  const encoding = existing?.encoding ?? UTF8;
+
+  // Keep an existing file's line endings (#165 ML-66). Models send LF; every
+  // one of the 80 recorded write_file calls over a CRLF file wrote LF, so the
+  // diff showed every line changed. edit_file already writes the file's own
+  // endings. Only an all-LF content is converted -- CRs the model sent are its own.
+  if (original !== undefined && !content.includes('\r')) {
+    const { eol } = detectEol(original);
+    if (eol !== '\n' && /\r\n|\r/.test(original)) content = applyEol(content, eol);
+  }
+  // A cp1252 file cannot store every character; refuse before anything is recorded.
+  const badChars = unencodableChars(content, encoding);
+  if (badChars.length > 0) throw new Error(unencodableMessage(filePath, badChars));
 
   // Syntax guard — the same invariant edit_file enforces: never write source
   // that does not parse. Live v0.119 dogfood: asked to add a JSDoc comment,
@@ -1075,7 +1105,8 @@ export async function writeFile(input: Record<string, unknown>, context?: ToolEx
     context.editTimeline.record(filePath, original, content);
   }
 
-  await workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf-8'));
+  // The file's own encoding and BOM (#165 ML-14): see fileEncoding.ts.
+  await workspace.fs.writeFile(fileUri, encodeFile(content, encoding));
   context?.workspaceIndex?.invalidateFile(filePath);
 
   if (context?.onOutput) {
@@ -1419,7 +1450,9 @@ export async function editFile(input: Record<string, unknown>, context?: ToolExe
         `Use edit_file only to change files that already exist.`,
     );
   }
-  const text = Buffer.from(bytes).toString('utf-8');
+  // In the file's own encoding (#165 ML-14): a cp1252 file decoded as UTF-8
+  // had every non-ASCII byte written back as U+FFFD on the first edit.
+  const { text, encoding } = decodeFile(bytes);
 
   // If the model is editing a file it hasn't explicitly read this turn,
   // inject the nearest relevant section so it has current file context.
@@ -1487,6 +1520,12 @@ export async function editFile(input: Record<string, unknown>, context?: ToolExe
   }
   const newText = resolved.newText;
 
+  const badChars = unencodableChars(newText, encoding);
+  if (badChars.length > 0) {
+    reportOutcome(false, 'unchecked');
+    throw new Error(unencodableMessage(filePath, badChars));
+  }
+
   // An edit that resolves to the file's own bytes changes nothing (#160
   // ML-05): a replace equal to what the indent tier matched, or a duplicated-
   // tail trim that left exactly the match. It was written back and reported
@@ -1510,7 +1549,7 @@ export async function editFile(input: Record<string, unknown>, context?: ToolExe
     context.editTimeline.record(filePath, text, newText);
   }
 
-  await workspace.fs.writeFile(fileUri, Buffer.from(newText, 'utf-8'));
+  await workspace.fs.writeFile(fileUri, encodeFile(newText, encoding));
   // After the write, so a write that throws is never recorded as applied; and
   // from the bytes themselves, so no resolver path can report a write that
   // changed nothing as a change.
