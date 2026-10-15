@@ -4,6 +4,42 @@ import { findPythonIndentErrors } from './pythonIndent.js';
 const errs = (src: string) => findPythonIndentErrors(src);
 const clean = (src: string) => expect(errs(src)).toEqual([]);
 
+// #157 ML-09: tree-sitter-python reads an out-of-place `else` as an
+// identifier, so an edit that orphaned one was written and CPython refused
+// the file. Validated quiet on 11,637 CPython-compiled files (3.14 stdlib and
+// site-packages, astropy, django).
+describe('continuation clauses must follow a statement they can continue', () => {
+  it('flags the orphaned else left by replacing an if header (the ML-09 case)', () => {
+    const sign = ['def sign(x):', '    if x >= 0:', '        return 1', '    else:', '        return -1', ''].join(
+      '\n',
+    );
+    const edited = sign.replace('    if x >= 0:\n        return 1', '    return 1');
+    clean(sign);
+    const e = errs(edited);
+    expect(e).toHaveLength(1);
+    expect(e[0]).toMatchObject({ line: 3 });
+    expect(e[0].message).toMatch(/'else' on line 3 does not follow/);
+  });
+
+  it('flags elif after a for, except without a try, finally at the wrong level', () => {
+    expect(errs('for i in x:\n    pass\nelif y:\n    pass\n')).toHaveLength(1);
+    expect(errs('x = 1\nexcept ValueError:\n    pass\n')).toHaveLength(1);
+    expect(errs('try:\n    a()\nexcept E:\n    b()\n    finally:\n        c()\n').length).toBeGreaterThan(0);
+  });
+
+  it('accepts every valid chain', () => {
+    clean('if a:\n    x()\nelif b:\n    y()\nelse:\n    z()\n');
+    clean('for i in r:\n    x()\nelse:\n    y()\n');
+    clean('while c:\n    x()\nelse:\n    y()\n');
+    clean('try:\n    x()\nexcept A:\n    y()\nexcept (B, C) as e:\n    z()\nelse:\n    w()\nfinally:\n    v()\n');
+    clean('try:\n    x()\nfinally:\n    y()\n');
+    clean('async def f():\n    async for i in g():\n        x()\n    else:\n        y()\n');
+    clean('if a: x = 1\nelse: x = 2\n');
+    clean('if a:\n    if b:\n        x()\n    else:\n        y()\nelse:\n    z()\n');
+    clean('def f():\n    try:\n        return 1\n    except Exception:  # comment\n        return 2\n');
+  });
+});
+
 // A false positive REFUSES A LEGITIMATE EDIT, which is worse than the
 // corruption this prevents. So the no-false-positive suite comes first and is
 // deliberately the larger one.
