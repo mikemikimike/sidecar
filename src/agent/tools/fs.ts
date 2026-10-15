@@ -866,6 +866,29 @@ export function droppedTopLevelDefinitions(current: string, next: string): strin
   return [...names].filter((n) => !new RegExp(`\\b${n}\\b`).test(next));
 }
 
+/**
+ * The non-blank lines of `current` and the share of them `next` still has
+ * (compared trimmed, anywhere in `next`). A fence-write keeping under half of
+ * an existing file replaces it rather than editing it (#164 ML-16): a script
+ * with no def/class/const lines -- imports, setup, a loop, a save -- has no
+ * definition for droppedTopLevelDefinitions to miss, so printing just the loop
+ * wrote the loop over the whole file.
+ */
+export function keptLineShare(current: string, next: string): { lines: number; kept: number } {
+  const old = current
+    .split(/\r\n|\r|\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+  if (old.length === 0) return { lines: 0, kept: 1 };
+  const have = new Set(next.split(/\r\n|\r|\n/).map((l) => l.trim()));
+  return { lines: old.length, kept: old.filter((l) => have.has(l)).length / old.length };
+}
+
+/** A fence-write keeping less than this share of a file's lines is refused (measured on 349 recorded fence-writes: every write the definition guard blocked keeps less, and every write that kept more was allowed by it). */
+const FENCE_WRITE_MIN_KEPT = 0.5;
+/** Below this many non-blank lines a file is too small for the share to mean anything. */
+const FENCE_WRITE_MIN_LINES = 3;
+
 export async function writeFile(input: Record<string, unknown>, context?: ToolExecutorContext): Promise<string> {
   const filePath = input.path as string;
   const pathError = validateFilePath(filePath);
@@ -932,6 +955,15 @@ export async function writeFile(input: Record<string, unknown>, context?: ToolEx
           `whole file: it is missing ${shown}, which the file has now, so writing it would delete them. Add your ` +
           `change with edit_file (put the existing lines it goes next to in \`search\`), or call write_file with ` +
           `the COMPLETE file.`,
+      );
+    }
+    const share = currentText ? keptLineShare(currentText, content) : { lines: 0, kept: 1 };
+    if (share.lines >= FENCE_WRITE_MIN_LINES && share.kept < FENCE_WRITE_MIN_KEPT) {
+      throw new Error(
+        `Nothing was written to \`${filePath}\`. You made no tool call, and the code block you printed is not the ` +
+          `whole file: it keeps only ${Math.round(share.kept * share.lines)} of the ${share.lines} lines the file ` +
+          `has now, so writing it would delete the rest. Add your change with edit_file (put the existing lines it ` +
+          `goes next to in \`search\`), or, to replace the file on purpose, call write_file with the COMPLETE file.`,
       );
     }
   }

@@ -9,6 +9,7 @@ import {
   editFileDef,
   fsTools,
   droppedTopLevelDefinitions,
+  keptLineShare,
   findIntentTarget,
 } from './fs.js';
 import { AuditBuffer, __setDefaultAuditBufferForTests } from '../audit/auditBuffer.js';
@@ -2374,6 +2375,53 @@ describe('write_file synthesized from a printed fence', () => {
     const write = await setup(calculator);
     await writeFile({ path: 'calculator.py', content: snippet }, {});
     expect(write).toHaveBeenCalledOnce();
+  });
+
+  // #164 ML-16: a script with no def/class/const lines has nothing for the
+  // definition check to miss, so printing just its loop replaced the file.
+  const train = [
+    'import torch',
+    'from model import Net',
+    'net = Net()',
+    'opt = torch.optim.SGD(net.parameters(), lr=0.1)',
+    'for epoch in range(10):',
+    '    loss = net.step(opt)',
+    '    print(epoch, loss)',
+    "torch.save(net.state_dict(), 'net.pt')",
+    '',
+  ].join('\n');
+
+  it('refuses a fence holding only part of a definition-free script (the ML-16 case)', async () => {
+    const write = await setup(train);
+    await expect(
+      writeFile(
+        { path: 'train.py', content: 'for epoch in range(20):\n    loss = net.step(opt)\n    print(epoch, loss)\n' },
+        { synthesizedFromFence: true },
+      ),
+    ).rejects.toThrow(/keeps only 2 of the 8 lines/);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('writes a fence that is the whole script with the change', async () => {
+    const write = await setup(train);
+    await writeFile(
+      { path: 'train.py', content: train.replace('range(10)', 'range(20)') },
+      { synthesizedFromFence: true },
+    );
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it('a file of fewer than 3 lines is left to the definition check', async () => {
+    const write = await setup('x = 1\nprint(x)\n');
+    await writeFile({ path: 'tiny.py', content: 'y = 2\n' }, { synthesizedFromFence: true });
+    expect(write).toHaveBeenCalledOnce();
+  });
+});
+
+describe('keptLineShare', () => {
+  it('counts the non-blank lines of the old file found anywhere in the new one, trimmed', () => {
+    expect(keptLineShare('a\n\n  b\nc\nd\n', 'b\nzz\na\n')).toEqual({ lines: 4, kept: 0.5 });
+    expect(keptLineShare('\n\n', 'x')).toEqual({ lines: 0, kept: 1 });
   });
 });
 
