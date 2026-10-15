@@ -213,7 +213,15 @@ function isEditAlreadyApplied(fileText: string, search: string, replace: string)
 
   const gone = removed.every((t) => !new RegExp(`\\b${t}\\b`).test(fileText));
   const present = added.every((t) => new RegExp(`\\b${t}\\b`).test(fileText));
-  return gone && present;
+  if (!gone || !present) return false;
+  // ...and the replacement itself is in the file, whitespace aside (#160
+  // ML-06). Token sets alone answered "applied earlier" for a search with one
+  // misremembered identifier (`sub_total` for `subtotal`: "gone") whose
+  // replace added a name used elsewhere in the file (`round(`: "present"), on
+  // a file the run had never touched -- nothing written, and the model told
+  // not to retry. 27 of 711 recorded multi-line answers had a replacement
+  // that was nowhere in the file.
+  return findEditMatch(fileText, replace, replace) !== null;
 }
 
 /**
@@ -476,6 +484,41 @@ function recordEditFailure(
  *  distinct failure isn't mistaken for a repeat of an already-fixed one. */
 function clearEditFailure(context: ToolExecutorContext | undefined, filePath: string): void {
   context?.editFailureSignatures?.delete(filePath);
+  context?.editFailureSignatures?.delete(noChangeKey(filePath));
+}
+
+const noChangeKey = (filePath: string): string => `${filePath}\0no-change`;
+
+/**
+ * A "No change needed" answer for `filePath`, with the count of times in a row
+ * this exact edit got it (#160 ML-73). It is a success, so the executor's
+ * bounce counter and the edit-failure tracking both reset on it, and an
+ * identical resend of an applied edit got the identical answer with no
+ * escalation: 121 of 787 recorded chains got it twice or more, 21 four to
+ * eleven times. The count lives under its own key and only a real write clears
+ * it, so the second identical resend says so.
+ */
+function noChangeAnswer(
+  context: ToolExecutorContext | undefined,
+  filePath: string,
+  search: string,
+  replace: string,
+  message: string,
+): string {
+  const map = context?.editFailureSignatures;
+  const signature = `${search.length}:${replace.length}:${search} ${replace}`;
+  let count = 1;
+  const prev = map?.get(noChangeKey(filePath));
+  if (prev) {
+    const sep = prev.indexOf('|');
+    if (prev.slice(sep + 1) === signature) count = Number(prev.slice(0, sep)) + 1;
+  }
+  map?.set(noChangeKey(filePath), `${count}|${signature}`);
+  if (count < 2) return message;
+  return (
+    `${message}\n\nYou have now sent this same edit ${count} times, and ${filePath} already had it every time. ` +
+    `Sending it again cannot change anything: finish, or move on to what is still undone.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1412,6 +1455,19 @@ export async function editFile(input: Record<string, unknown>, context?: ToolExe
   }
   const newText = resolved.newText;
 
+  // An edit that resolves to the file's own bytes changes nothing (#160
+  // ML-05): a replace equal to what the indent tier matched, or a duplicated-
+  // tail trim that left exactly the match. It was written back and reported
+  // as "File edited" with an empty diff -- 31 of 5,687 success-class calls.
+  if (newText === text) {
+    reportOutcome(false, resolved.syntax ?? 'unchecked', resolved.tier);
+    const same =
+      `No change needed: ${filePath} already has this text — your replacement is identical to what is ` +
+      `there now, so nothing was written.\n\nIf you meant to change something, read the file and make ` +
+      `'replace' differ from the current text; otherwise this part is already done.`;
+    return noChangeAnswer(context, filePath, search, replace, same);
+  }
+
   const patch = computeLineDiff(text, newText, filePath);
   if (context?.onOutput && patch) context.onOutput(DIFF_PREFIX + patch);
   clearEditFailure(context, filePath);
@@ -1805,13 +1861,13 @@ export async function resolveEditedText(params: {
     // Saying "search string not found" there is true but useless, and it drove
     // a live edit loop until cycle detection bailed. Say what is actually true.
     if (isEditAlreadyApplied(text, search, replace)) {
-      clearEditFailure(context, filePath);
+      context?.editFailureSignatures?.delete(filePath);
       const applied =
         `No change needed: ${filePath} already contains the result of this edit. The text you searched for is ` +
         `gone and your replacement is already present — this change was applied earlier, so the file is ` +
         `already in the state you want.\n\nDo NOT repeat this edit. If the overall task is complete, say so ` +
         `and finish; if other files still need changing, move on to those.`;
-      return { newText: null, message: applied };
+      return { newText: null, message: noChangeAnswer(context, filePath, search, replace, applied) };
     }
 
     // The model's `search` did not match. Two tiers, both measured against 1,700
@@ -2051,9 +2107,21 @@ export async function resolveEditedText(params: {
       const trimmedText = splice(trimmedReplace);
       const trimmedSyntax = await editWouldBreakSyntax(filePath, text, trimmedText);
       const originalSyntax = await editWouldBreakSyntax(filePath, text, rawNewText);
-      // Only rewrite when the trim actually rescues the edit — never silently
-      // change an edit that was already fine.
-      if (originalSyntax.refuse && !trimmedSyntax.refuse) {
+      // Rewrite when the trim rescues the edit -- and also when the duplicate
+      // still parses (#160 ML-04): a Python method body restated after an
+      // insertion parses fine twice, so it was written twice and reported
+      // "File edited" (128 of 5,662 recorded successes; 77 of 88 duplicated
+      // blocks were still in the file at the end of the run). That second
+      // case is limited to languages the syntax check covers and to a restated
+      // tail of at least one whole line. Unparsed files (.rst, templates) keep
+      // the old rule: their recorded cases were a deliberately added closing
+      // tag, not a restatement.
+      const restatesWholeLines = trailing.includes('\n') && trailing.trim() !== '';
+      const parsedLanguage = originalSyntax.verdict !== 'unchecked';
+      if (
+        !trimmedSyntax.refuse &&
+        (originalSyntax.refuse || (parsedLanguage && !originalSyntax.refuse && restatesWholeLines))
+      ) {
         newText = trimmedText;
         duplicateTrimNote =
           `[note: your 'replace' restated text that already follows the match (the block body), which would ` +
