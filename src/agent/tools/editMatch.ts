@@ -414,6 +414,8 @@ export function findEditMatches(
     }
   }
 
+  // A/B arm switch (exp/blank-tier-ab only, not for merge).
+  if (process.env.SIDECAR_BLANK_TIER === 'off') return [];
   return findBlankTolerantMatches(text, search, replace, eol);
 }
 
