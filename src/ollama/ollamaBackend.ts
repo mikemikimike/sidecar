@@ -33,6 +33,20 @@ export function normalizeDoneReason(reason: string): string {
   return reason === 'length' ? 'max_tokens' : reason;
 }
 
+/**
+ * The stop event for a finished Ollama stream. A turn that carried a tool call
+ * reports `tool_use` -- EXCEPT when it hit the limit: `length` wins, so the
+ * loop can withhold a call that was cut off mid-arguments instead of repairing
+ * it into a shorter complete one (#164 ML-15). A call that arrived whole still
+ * runs; the loop judges each call by its own arguments.
+ */
+export function ollamaStopReason(doneReason: string | undefined, sawToolCall: boolean): string {
+  if (doneReason === 'length') return 'max_tokens';
+  if (sawToolCall) return 'tool_use';
+  if (doneReason === 'stop' || !doneReason) return 'end_turn';
+  return normalizeDoneReason(doneReason);
+}
+
 // ---------------------------------------------------------------------------
 // Tool support detection
 // ---------------------------------------------------------------------------
@@ -661,9 +675,7 @@ export class OllamaBackend implements ApiBackend {
 
           // Emit stop when done.
           // Ollama may set done_reason to 'stop' (clean end), 'length' (max tokens),
-          // or omit it entirely when tool calls happen. If we saw any tool calls in
-          // this stream, signal 'tool_use' so the agent loop knows to execute them
-          // regardless of the underlying done_reason.
+          // or omit it entirely when tool calls happen. See ollamaStopReason.
           if (chunk.done) {
             sawDoneChunk = true;
             // Surface Ollama's actual token counts so the loop uses real numbers
@@ -681,15 +693,10 @@ export class OllamaBackend implements ApiBackend {
                 },
               };
             }
-            let stopReason: string;
-            if (sawToolCall || emittedToolCallThisChunk) {
-              stopReason = 'tool_use';
-            } else if (chunk.done_reason === 'stop' || !chunk.done_reason) {
-              stopReason = 'end_turn';
-            } else {
-              stopReason = normalizeDoneReason(chunk.done_reason);
-            }
-            yield { type: 'stop', stopReason };
+            yield {
+              type: 'stop',
+              stopReason: ollamaStopReason(chunk.done_reason, sawToolCall || emittedToolCallThisChunk),
+            };
           }
         }
       }
@@ -723,14 +730,7 @@ export class OllamaBackend implements ApiBackend {
                 },
               };
             }
-            yield {
-              type: 'stop',
-              stopReason: sawToolCall
-                ? 'tool_use'
-                : chunk.done_reason === 'stop' || !chunk.done_reason
-                  ? 'end_turn'
-                  : normalizeDoneReason(chunk.done_reason),
-            };
+            yield { type: 'stop', stopReason: ollamaStopReason(chunk.done_reason, sawToolCall) };
           }
         } catch {
           logger.warn('[SideCar] Ollama: stream ended with unparsed trailing data:', trailing.slice(0, 200));

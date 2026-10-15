@@ -28,6 +28,13 @@ export interface ToolUseContentBlock {
    */
   _malformedInputRaw?: string;
   /**
+   * Set by the loop when the call must not run because the turn that carried
+   * it did not finish (#164 ML-15): cut off at the output limit mid-call, or
+   * the stream ended without its completion signal. The executor returns this
+   * as the call's error result without running anything.
+   */
+  _withheldReason?: string;
+  /**
    * Provider data the model attached to this call that must be sent back
    * with it on the next request -- the OpenAI-compatible `extra_content`,
    * where Gemini 3 puts its `thought_signature`. Without it Google rejects

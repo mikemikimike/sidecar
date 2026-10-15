@@ -16,6 +16,7 @@ export async function* translateAnthropicStream(
   let accOutputTokens = 0;
   let accCacheCreate = 0;
   let accCacheRead = 0;
+  let sawMessageStop = false;
 
   for await (const event of events) {
     switch (event.type) {
@@ -79,6 +80,7 @@ export async function* translateAnthropicStream(
         break;
 
       case 'message_stop':
+        sawMessageStop = true;
         yield {
           type: 'usage',
           model,
@@ -95,5 +97,14 @@ export async function* translateAnthropicStream(
         if (event.error) throw new Error(event.error.message);
         break;
     }
+  }
+
+  // The stream ended without `message_stop` -- the connection dropped or the
+  // body was cut. Say so instead of letting the turn read as a clean finish:
+  // the loop withholds any tool call from a turn that stopped with 'error'
+  // (#164 ML-15), as it already does for an Ollama stream with no done chunk.
+  if (!sawMessageStop) {
+    yield { type: 'warning', message: 'The response stream ended before it finished — the response may be truncated.' };
+    yield { type: 'stop', stopReason: 'error' };
   }
 }

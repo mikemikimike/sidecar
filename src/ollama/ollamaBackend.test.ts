@@ -6,6 +6,7 @@ import {
   recordToolFailure,
   recordToolSuccess,
   __resetNumCtxProbesForTests,
+  ollamaStopReason,
 } from './ollamaBackend.js';
 import type { ChatMessage, ToolDefinition, StreamEvent } from './types.js';
 
@@ -1062,5 +1063,19 @@ describe('thinking mode', () => {
       const options = await capturedOptions(model, { ollamaDisableThinking: false });
       expect({ model, think: options.think }).toEqual({ model, think: false });
     }
+  });
+});
+
+describe('ollamaStopReason (#164 ML-15)', () => {
+  it('reports a turn that hit the limit as max_tokens even when it carried a tool call', () => {
+    expect(ollamaStopReason('length', true)).toBe('max_tokens');
+    expect(ollamaStopReason('length', false)).toBe('max_tokens');
+  });
+
+  it('a finished turn with a tool call is tool_use; without one, end_turn', () => {
+    expect(ollamaStopReason('stop', true)).toBe('tool_use');
+    expect(ollamaStopReason(undefined, true)).toBe('tool_use');
+    expect(ollamaStopReason('stop', false)).toBe('end_turn');
+    expect(ollamaStopReason(undefined, false)).toBe('end_turn');
   });
 });

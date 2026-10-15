@@ -172,18 +172,22 @@ export async function* streamOpenAiSse(
     for (const [, tc] of pendingToolCalls) {
       if (tc.name) {
         let parsedArgs: Record<string, unknown> = {};
+        let malformedRaw: string | undefined;
         try {
           parsedArgs = JSON.parse(tc.arguments || '{}');
         } catch {
-          logger.warn(
-            `[SideCar] Malformed tool-call arguments for "${tc.name}" — dispatching with empty input: ${tc.arguments?.slice(0, 200)}`,
-          );
+          // Marked, like the Anthropic translator does, so the loop can repair
+          // it -- or withhold it when the turn was cut off (#164 ML-15, ML-59).
+          // Sent as a bare `{}` it ran as an empty call with no trace of why.
+          malformedRaw = tc.arguments;
+          logger.warn(`[SideCar] Malformed tool-call arguments for "${tc.name}": ${tc.arguments?.slice(0, 200)}`);
         }
         const toolUse: ToolUseContentBlock = {
           type: 'tool_use',
           id: tc.id || `${toolCallIdPrefix}_tc_${++toolCallIdCounter}`,
           name: tc.name,
           input: parsedArgs,
+          ...(malformedRaw !== undefined ? { _malformedInputRaw: malformedRaw } : {}),
           ...(tc.extraContent ? { extraContent: tc.extraContent } : {}),
         };
         yield { type: 'tool_use', toolUse };

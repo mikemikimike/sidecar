@@ -178,6 +178,14 @@ export type { ExecutionContext };
 async function executeOne(ctx: ExecutionContext, toolUse: ToolUseContentBlock): Promise<ToolResultContentBlock> {
   const { state, options, callbacks, signal } = ctx;
 
+  // A call withheld from an unfinished turn never runs (#164 ML-15). Checked
+  // first: spawn_agent and delegate_task below never reach executeTool's own
+  // check, and a call that does not run should not spend tool budget.
+  if (toolUse._withheldReason !== undefined) {
+    callbacks.onToolResult(toolUse.name, toolUse._withheldReason, true, toolUse.id);
+    return { type: 'tool_result', tool_use_id: toolUse.id, content: toolUse._withheldReason, is_error: true };
+  }
+
   // Per-tool rate limiting: check budget before executing
   const budgetError = checkToolBudget(state, toolUse.name);
   if (budgetError) {

@@ -427,8 +427,54 @@ describe('AnthropicBackend', () => {
       }
 
       expect(events).toContainEqual({ type: 'text', text: 'partial response' });
-      // Should not crash, just end without a stop event
-      expect(events.find((e) => e.type === 'stop')).toBeUndefined();
+      // Does not crash, and does not read as a clean finish: no message_stop
+      // means the turn ended early, reported as stop 'error' (#164 ML-15).
+      expect(events.find((e) => e.type === 'warning')).toBeDefined();
+      expect(events.filter((e) => e.type === 'stop')).toEqual([{ type: 'stop', stopReason: 'error' }]);
+    });
+
+    it('a complete tool call followed by EOF before message_stop ends the turn with stop error', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: sseBody([
+          sse({ type: 'content_block_start', content_block: { type: 'tool_use', id: 't1', name: 'write_file' } }),
+          sse({
+            type: 'content_block_delta',
+            delta: { type: 'input_json_delta', partial_json: '{"path":"a.txt","content":"x"}' },
+          }),
+          sse({ type: 'content_block_stop' }),
+          sse({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+          // connection drops: no message_stop
+        ]),
+      });
+
+      const events = [];
+      for await (const event of backend.streamChat('claude-3', '', [{ role: 'user', content: 'hi' }])) {
+        events.push(event);
+      }
+
+      expect(events.find((e) => e.type === 'tool_use')).toBeDefined();
+      const stops = events.filter((e) => e.type === 'stop');
+      expect(stops[stops.length - 1]).toEqual({ type: 'stop', stopReason: 'error' });
+    });
+
+    it('a stream that reaches message_stop reports its own stop reason only', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: sseBody([
+          sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'done' } }),
+          sse({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+          sse({ type: 'message_stop' }),
+        ]),
+      });
+
+      const events = [];
+      for await (const event of backend.streamChat('claude-3', '', [{ role: 'user', content: 'hi' }])) {
+        events.push(event);
+      }
+
+      expect(events.filter((e) => e.type === 'stop')).toEqual([{ type: 'stop', stopReason: 'end_turn' }]);
+      expect(events.find((e) => e.type === 'warning')).toBeUndefined();
     });
 
     it('emits usage event with cache_creation_input_tokens > 0 on multi-turn conversation', async () => {

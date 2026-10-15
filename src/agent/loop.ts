@@ -48,6 +48,7 @@ import { buildRegressionGuardHooks } from './guards/regressionGuardHook.js';
 import { getSdkHooks } from '../sdk/registry.js';
 import { dispatchPendingToolUses } from './loop/dispatchToolUses.js';
 import { repairMalformedToolUses } from './loop/toolCallRepair.js';
+import { withholdUnfinishedToolCalls } from './loop/withheldToolCalls.js';
 import { notifyIterationStart, maybeEmitProgressSummary, shouldStopAtCheckpoint } from './loop/notifications.js';
 import { finalize } from './loop/finalize.js';
 import { maybeForceFinalAnswer } from './loop/forceFinalAnswer.js';
@@ -707,11 +708,24 @@ export async function runAgentLoop(
       const resolved = resolveTurnContent(rawTurn, state, callbacks);
       const { fullText, pendingToolUses } = resolved;
 
+      // A call from a turn that did not finish never runs -- and is never
+      // "repaired" into a shorter complete one (#164 ML-15). Judged on the raw
+      // stop reason: resolveTurnContent rewrites it to 'tool_use' once it
+      // parses a text-form call.
+      const withheld = withholdUnfinishedToolCalls(pendingToolUses, rawTurn.stopReason);
+      if (withheld > 0) {
+        state.logger?.warn(
+          `Withheld ${withheld} tool call${withheld === 1 ? '' : 's'} from an unfinished turn (stop: ${rawTurn.stopReason})`,
+        );
+      }
+
       // Phase 1: constrained-decoding repair of malformed tool calls — at the
       // action boundary, before dispatch. Heuristic JSON repair first, then a
       // schema-constrained regeneration. Recovers calls that would otherwise
       // error/drop, instead of burning a whole retry turn.
-      const malformedCount = pendingToolUses.filter((tu) => tu._malformedInputRaw !== undefined).length;
+      const malformedCount = pendingToolUses.filter(
+        (tu) => tu._malformedInputRaw !== undefined && tu._withheldReason === undefined,
+      ).length;
       if (malformedCount > 0) {
         try {
           const fixed = await repairMalformedToolUses(pendingToolUses, {
@@ -772,7 +786,9 @@ export async function runAgentLoop(
         // sentence, ended the run as if finished. Keep what was written and
         // ask the model to carry on -- at most twice, so a model that cannot
         // fit its answer in the cap is not looped forever. (A tool call cut
-        // off mid-JSON is never emitted as one, so it lands here too.)
+        // off mid-JSON does not land here: it is dispatched withheld, and its
+        // error result tells the model to re-issue it -- see
+        // withheldToolCalls.ts.)
         if (resolved.stopReason === 'max_tokens' && state.truncatedTurnContinues < 2) {
           state.truncatedTurnContinues += 1;
           if (fullText.trim()) pushAssistantMessage(state, fullText, []);

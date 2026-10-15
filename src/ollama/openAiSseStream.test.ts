@@ -411,3 +411,32 @@ describe('tool-call extra_content (Gemini 3 thought_signature)', () => {
     expect(toolUse.extraContent).toEqual({ google: { thought_signature: 'sig-abc' } });
   });
 });
+
+describe('streamOpenAiSse: malformed tool arguments (#164 ML-59)', () => {
+  it('marks unparseable arguments instead of sending them as a bare {}', async () => {
+    const response = mockSseResponse([
+      JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'c1', function: { name: 'write_file', arguments: '{"path":"a.txt","content":"x' } },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }),
+      JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] }),
+    ]);
+    const events = await collect(streamOpenAiSse(response, 'gpt-4o', undefined, undefined));
+    const toolUses = events.filter((e) => e.type === 'tool_use') as Array<{
+      toolUse: { input: unknown; _malformedInputRaw?: string };
+    }>;
+    expect(toolUses).toHaveLength(1);
+    expect(toolUses[0].toolUse.input).toEqual({});
+    expect(toolUses[0].toolUse._malformedInputRaw).toBe('{"path":"a.txt","content":"x');
+    expect(events.filter((e) => e.type === 'stop')).toEqual([{ type: 'stop', stopReason: 'max_tokens' }]);
+  });
+});

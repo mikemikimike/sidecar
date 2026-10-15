@@ -202,12 +202,22 @@ function balanceBrackets(s: string): string {
   return out;
 }
 
+export interface JsonRepairOptions {
+  /**
+   * Close an unterminated string and unclosed brackets (default true). Pass
+   * false when the text may have been cut off rather than fumbled: closing it
+   * yields a complete-looking object with the tail missing (#164 ML-15).
+   */
+  closeTruncated?: boolean;
+}
+
 /**
  * Attempt to recover a JSON object from malformed text. Returns the parsed
  * object or null. Applies progressively more aggressive fixes, parsing after
  * each, so a value that's already valid after a light touch wins.
  */
-export function tryJsonRepair(raw: string): Record<string, unknown> | null {
+export function tryJsonRepair(raw: string, options: JsonRepairOptions = {}): Record<string, unknown> | null {
+  const close = options.closeTruncated !== false;
   if (!raw || typeof raw !== 'string') return null;
 
   const base = extractFirstObject(raw) ?? raw.trim();
@@ -235,8 +245,10 @@ export function tryJsonRepair(raw: string): Record<string, unknown> | null {
   candidates.push(dq);
 
   // Balance unclosed brackets / strings (truncation).
-  candidates.push(balanceBrackets(quotedKeys));
-  candidates.push(balanceBrackets(dq));
+  if (close) {
+    candidates.push(balanceBrackets(quotedKeys));
+    candidates.push(balanceBrackets(dq));
+  }
 
   // Escape raw control chars inside strings (literal newlines in multi-line
   // content) — the dominant coding-tool-call failure. Layered on the strongest
@@ -244,7 +256,7 @@ export function tryJsonRepair(raw: string): Record<string, unknown> | null {
   // correctly used double quotes but embedded raw newlines).
   candidates.push(escapeControlCharsInStrings(quotedKeys));
   candidates.push(escapeControlCharsInStrings(dq));
-  candidates.push(balanceBrackets(escapeControlCharsInStrings(dq)));
+  if (close) candidates.push(balanceBrackets(escapeControlCharsInStrings(dq)));
 
   for (const c of candidates) {
     const obj = parseObject(c);
