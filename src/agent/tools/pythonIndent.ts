@@ -232,5 +232,52 @@ export function findPythonIndentErrors(source: string): IndentError[] {
     }
   }
 
+  if (errors.length < 10) errors.push(...orphanedClauses(lines).slice(0, 10 - errors.length));
+  return errors;
+}
+
+/** The headers each continuation clause may follow, at its own indentation. */
+const CLAUSE_FOLLOWS: Record<string, readonly string[]> = {
+  elif: ['if', 'elif'],
+  else: ['if', 'elif', 'for', 'while', 'try', 'except'],
+  except: ['try', 'except'],
+  finally: ['try', 'except', 'else'],
+};
+
+/** The compound-statement keyword a logical line starts with (`async for` -> `for`), or null. */
+function headerKeyword(code: string): string | null {
+  const m = /^(?:async\s+)?(if|elif|else|for|while|try|except|finally|with|def|class|match|case)\b/.exec(
+    code.trimStart(),
+  );
+  return m && code.includes(':') ? m[1] : null;
+}
+
+/**
+ * `else` / `elif` / `except` / `finally` that do not continue a statement
+ * they can belong to (#157 ML-09). tree-sitter-python reads an out-of-place
+ * `else` as an identifier and parses the file clean, and the indentation rules
+ * above see nothing wrong with it, so an edit that deleted an `if` header and
+ * left its `else:` -- or wrote `return 1` in place of `if x >= 0:\n    return 1`
+ * -- was written, and CPython refused the file. The clause must follow, at its
+ * own indentation, a header it can continue (a one-line `if x: y = 1` counts);
+ * anything else there is the error CPython reports.
+ */
+function orphanedClauses(lines: LogicalLine[]): IndentError[] {
+  const errors: IndentError[] = [];
+  for (let k = 0; k < lines.length; k++) {
+    const clause = /^(elif|else|except|finally)\b/.exec(lines[k].code.trimStart())?.[1];
+    if (!clause) continue;
+    // The statement before it at its own level: skip the deeper lines of the
+    // previous clause's body.
+    let j = k - 1;
+    while (j >= 0 && lines[j].indent > lines[k].indent) j--;
+    const header = j >= 0 && lines[j].indent === lines[k].indent ? headerKeyword(lines[j].code) : null;
+    if (header === null || !CLAUSE_FOLLOWS[clause].includes(header)) {
+      errors.push({
+        line: lines[k].line,
+        message: `'${clause}' on line ${lines[k].line} does not follow a statement it can continue (${CLAUSE_FOLLOWS[clause].map((h) => `'${h}'`).join(', ')}) at the same indentation`,
+      });
+    }
+  }
   return errors;
 }

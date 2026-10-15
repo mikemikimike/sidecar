@@ -45,27 +45,42 @@ import { getGrammarsPath } from '../../parsing/registry.js';
 import { findPythonIndentErrors } from './pythonIndent.js';
 
 /** File extension → tree-sitter grammar name. Mirrors the shipped wasm set. */
+//
+// Sibling extensions map to the same grammar (#157 ML-47). `.h` is read with
+// the C++ grammar, which parses C too; the C grammar would count a C++
+// header's classes as errors. Dart is NOT listed (ML-39): the shipped grammar
+// is ABI 15 and the runtime reads 13-14, so it never loads -- listing it only
+// made canParseSyntax claim a check that could not run. Re-add it with a
+// runtime that loads it.
 const EXT_TO_GRAMMAR: Record<string, string> = {
   ts: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
   tsx: 'tsx',
   js: 'javascript',
   jsx: 'javascript',
   mjs: 'javascript',
   cjs: 'javascript',
   py: 'python',
+  pyi: 'python',
   rs: 'rust',
   go: 'go',
   java: 'java',
   rb: 'ruby',
   c: 'c',
+  h: 'cpp',
   cpp: 'cpp',
+  cc: 'cpp',
+  cxx: 'cpp',
+  hpp: 'cpp',
+  hh: 'cpp',
   cs: 'c_sharp',
   php: 'php',
   lua: 'lua',
   swift: 'swift',
   kt: 'kotlin',
+  kts: 'kotlin',
   scala: 'scala',
-  dart: 'dart',
 };
 
 /** Milliseconds a syntax check may take before the edit proceeds unchecked. */
@@ -80,7 +95,7 @@ interface TsNode {
   child(i: number): TsNode | null;
 }
 interface TsParser {
-  parse(content: string): { rootNode: TsNode } | null;
+  parse(content: string): { rootNode: TsNode; delete?(): void } | null;
 }
 
 const parserCache = new Map<string, TsParser | null>();
@@ -193,11 +208,36 @@ async function checkSyntaxUnbounded(filePath: string, content: string): Promise<
   if (!parser) return UNCHECKED;
 
   const tree = parser.parse(content);
-  if (!tree?.rootNode) return UNCHECKED;
+  if (!tree?.rootNode) {
+    tree?.delete?.();
+    return UNCHECKED;
+  }
 
-  const { found: errors, complete } = collectErrors(tree.rootNode);
-  let count = errors.length;
-  let firstLine = errors[0]?.startPosition?.row !== undefined ? errors[0].startPosition!.row + 1 : undefined;
+  // Everything read from the tree is read before it is freed: its nodes point
+  // into WASM memory.
+  let count: number;
+  let complete: boolean;
+  let rootHasError: boolean;
+  let rows: number[];
+  try {
+    const collected = collectErrors(tree.rootNode);
+    count = collected.found.length;
+    complete = collected.complete;
+    rootHasError = asBool(tree.rootNode.hasError);
+    // The walk pops a stack, so `found` is not in document order: found[0]
+    // was the LAST error, reported as "the first parse error" (ML-49).
+    rows = collected.found.map((e) => e.startPosition?.row).filter((r): r is number => r !== undefined);
+  } finally {
+    // Trees live on the WASM heap, not the JS one, and are never collected
+    // (#157 ML-30): without this the heap filled after ~1,400-2,800 checks in
+    // one process, every later parse failed, and the guard -- which fails open
+    // -- allowed every edit in every language from then on.
+    tree.delete?.();
+  }
+  let firstLine = rows.length > 0 ? Math.min(...rows) + 1 : undefined;
+  // A MISSING token can sit where the walk cannot reach it, leaving a tree
+  // that says it has an error with none found (ML-45): count it as one.
+  if (count === 0 && rootHasError) count = 1;
 
   // PYTHON: tree-sitter catches structure (a missing colon) but NOT indentation
   // — verified against the shipped grammar, it parses an orphaned indented line
@@ -461,8 +501,9 @@ export function __resetParserCache(): void {
   parserCache.clear();
 }
 
-/** True when a grammar exists for this file — i.e. the parse guard can actually run. */
+/** True when a grammar exists for this file and has not failed to load — i.e. the parse guard can actually run. */
 export function canParseSyntax(filePath: string): boolean {
   const ext = path.extname(filePath).slice(1).toLowerCase();
-  return EXT_TO_GRAMMAR[ext] !== undefined;
+  const grammar = EXT_TO_GRAMMAR[ext];
+  return grammar !== undefined && parserCache.get(grammar) !== null;
 }
