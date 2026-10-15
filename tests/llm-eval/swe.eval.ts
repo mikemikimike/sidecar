@@ -30,7 +30,8 @@ import type { ChatMessage } from '../../src/ollama/types.js';
 import { ToolRuntime } from '../../src/agent/tools/runtime.js';
 import { buildBaseSystemPrompt } from '../../src/webview/handlers/basePrompt.js';
 import { getConfig } from '../../src/config/settings.js';
-import { getToolDefinitionsForTier } from '../../src/agent/tools.js';
+import { getToolDefinitionsForTier, findTool } from '../../src/agent/tools.js';
+import { STABLE_TOOL_ENV, stableOutputTools } from '../../bench/swe/stableToolOutput.js';
 import { mountWorkspaceRoot } from './workspaceSandbox.js';
 import { parseTasks, sampleTasks } from '../../bench/swe/loader.js';
 import { armConfigOverrides } from '../../bench/swe/arms.js';
@@ -85,6 +86,15 @@ const MAX_ITERS = parseInt(process.env.SIDECAR_SWE_MAX_ITERS ?? '50', 10);
 const PER_TASK_MS = parseInt(process.env.SIDECAR_SWE_TASK_TIMEOUT ?? '600000', 10);
 // Experiment switch: see the armConfig construction for what it enables.
 const REDCHECK_RATCHETED = process.env.SIDECAR_SWE_REDCHECK_RATCHETED === '1';
+// Reproducible tool output (bench/swe/stableToolOutput.ts): pinned git dates and
+// hash seed for every tool subprocess, and run-to-run volatile numbers (test
+// durations, sympy's random seed) fixed in process output before the model
+// sees it. Same seed + engine + code then gives the same run, so a paired A/B
+// measures its treatment instead of timing noise -- 73 of 126 untouched pairs
+// diverged without it. On by default; SIDECAR_SWE_STABLE_OUTPUT=0 restores the
+// raw output (and a baseline comparable with cells run before 2026-10-15).
+const STABLE_OUTPUT = process.env.SIDECAR_SWE_STABLE_OUTPUT !== '0';
+if (STABLE_OUTPUT) Object.assign(process.env, STABLE_TOOL_ENV);
 // Per-(repo,version) solve environments (uv venvs) so run_tests/run_command work
 // against installed deps. Specs from the committed env-specs.json (generated from
 // swebench's MAP_REPO_VERSION_TO_SPECS). Venvs cached under the env cache base.
@@ -642,6 +652,7 @@ async function solve(task: SweTask, arm: ArmName): Promise<SwePrediction> {
       // (thousands of tests, truncated output) that would otherwise distort both
       // arms' wall clock and leave the agent with no usable test signal.
       extraPolicyHooks: [wholeSuiteGuard()],
+      ...(STABLE_OUTPUT ? { extraTools: stableOutputTools((name) => findTool(name, undefined, armConfig)) } : {}),
     };
     const userMsg = buildTaskPrompt(task, retrieval.context, taskEnv, dir);
     const messages: ChatMessage[] = [{ role: 'user', content: userMsg }];
@@ -873,6 +884,7 @@ describe('SWE-bench Lite — prediction generation', () => {
         maxIterations: MAX_ITERS,
         retrievalTopK: RETRIEVAL_TOPK,
         redCheckRatcheted: REDCHECK_RATCHETED,
+        stableToolOutput: STABLE_OUTPUT,
         retrievalCliffGate: CLIFF_GATE,
         // The deterministic control layer. bench/swe/README notes it is not
         // config-gated and runs in BOTH ablation arms, so a scaffold-on/off
