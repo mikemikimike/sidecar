@@ -21,7 +21,7 @@
 // more than one match reports the ambiguity rather than picking one.
 
 /** How much whitespace difference a match had to absorb. `exact` = none. */
-export type MatchTier = 'exact' | 'eol' | 'trailing-space' | 'indent';
+export type MatchTier = 'exact' | 'eol' | 'trailing-space' | 'indent' | 'blank-lines';
 
 export interface EditMatch {
   /** Byte offset of the match in the ORIGINAL text. */
@@ -414,7 +414,164 @@ export function findEditMatches(
     }
   }
 
-  return [];
+  return findBlankTolerantMatches(text, search, replace, eol);
+}
+
+const isBlank = (line: string): boolean => line.trim() === '';
+const trimEnd = (line: string): string => line.replace(/[ \t]+$/, '');
+
+interface FileLine {
+  text: string;
+  start: number;
+  /** End of the line's content, before its line break. */
+  contentEnd: number;
+  /** After its line break (= contentEnd on a last line without one). */
+  end: number;
+}
+
+function splitLines(text: string): FileLine[] {
+  const lines: FileLine[] = [];
+  const re = /\r\n|\r|\n/g;
+  let start = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    lines.push({ text: text.slice(start, m.index), start, contentEnd: m.index, end: m.index + m[0].length });
+    start = m.index + m[0].length;
+  }
+  if (start < text.length) lines.push({ text: text.slice(start), start, contentEnd: text.length, end: text.length });
+  return lines;
+}
+
+/** For each line of `a`, the index of the line of `b` a longest common subsequence aligns it with, or -1. */
+function alignLines(a: string[], b: string[]): number[] {
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = trimEnd(a[i]) === trimEnd(b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = new Array<number>(n).fill(-1);
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (trimEnd(a[i]) === trimEnd(b[j])) out[i++] = j++;
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return out;
+}
+
+/**
+ * The last tier (#155 ML-37): the search's lines are all in the file, in
+ * order, and differ from it only in blank (or whitespace-only) lines -- most
+ * often a blank line the model left out. Whole lines only: the search's first
+ * and last lines must be non-blank, it must have at least two non-blank lines,
+ * and each must equal a file line up to trailing whitespace. As on every tier,
+ * more than one occurrence is reported as ambiguous, never picked from.
+ *
+ * The file's blank lines are kept. Where the replacement still has the gap the
+ * search had between two of its lines, the blank lines that end that gap are
+ * swapped for the ones the file really has -- so editing the lines around a
+ * gap, or inserting code into it, does not quietly delete it. Where the
+ * replacement changed the number of blank lines there, or the gap's place in
+ * the replacement is unknown, the replacement is written as sent.
+ */
+function findBlankTolerantMatches(text: string, search: string, replace: string, eol: string): EditMatch[] {
+  const searchLf = applyEol(search, '\n');
+  const endsWithBreak = searchLf.endsWith('\n');
+  const sLines = (endsWithBreak ? searchLf.slice(0, -1) : searchLf).split('\n');
+  const content = sLines.map((l, i) => (isBlank(l) ? -1 : i)).filter((i) => i >= 0);
+  if (content.length < 2 || isBlank(sLines[0]) || isBlank(sLines[sLines.length - 1])) return [];
+  const replaceLf = applyEol(replace, '\n');
+  const replaceEndsWithBreak = replaceLf.endsWith('\n');
+  const rLines = (replaceEndsWithBreak ? replaceLf.slice(0, -1) : replaceLf).split('\n');
+  // The alignment is quadratic; a search or replacement this large is not the
+  // dropped-blank-line case this tier exists for.
+  if (sLines.length * rLines.length > 250_000) return [];
+
+  const lines = splitLines(text);
+  /** File line index of each non-blank search line, starting at file line `i`, or null. */
+  const matchAt = (i: number): number[] | null => {
+    const at: number[] = [];
+    let j = i;
+    for (const k of content) {
+      if (at.length > 0) while (j < lines.length && isBlank(lines[j].text)) j++;
+      if (j >= lines.length || trimEnd(lines[j].text) !== trimEnd(sLines[k])) return null;
+      at.push(j++);
+    }
+    return at;
+  };
+
+  const hits: number[][] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const at = matchAt(i);
+    if (at) hits.push(at);
+  }
+  if (hits.length === 0) return [];
+
+  // Where each search line sits in the replacement, seen from the gap after it
+  // (posL) and the gap before it (posR). A line the replacement kept is at its
+  // own line. A changed block that swaps lines one for one maps line by line.
+  // In any other changed block only its edges are known: its last line ends
+  // where the block's replacement ends, its first starts where it starts.
+  // Lines inside such a block have no position, so no gap there is touched.
+  const toReplace = alignLines(sLines, rLines);
+  const posL = new Array<number | null>(sLines.length).fill(null);
+  const posR = new Array<number | null>(sLines.length).fill(null);
+  let i1 = -1;
+  let j1 = -1;
+  const closeBlock = (i2: number, j2: number): void => {
+    const oneForOne = i2 - i1 === j2 - j1;
+    for (let i = i1 + 1; i < i2; i++) {
+      if (oneForOne) posL[i] = posR[i] = j1 + (i - i1);
+      else {
+        if (i === i2 - 1) posL[i] = j2 - 1;
+        if (i === i1 + 1) posR[i] = j1 + 1;
+      }
+    }
+  };
+  for (let i = 0; i < sLines.length; i++) {
+    if (toReplace[i] < 0) continue;
+    closeBlock(i, toReplace[i]);
+    posL[i] = posR[i] = toReplace[i];
+    i1 = i;
+    j1 = toReplace[i];
+  }
+  closeBlock(sLines.length, rLines.length);
+
+  const found: EditMatch[] = [];
+  let next = 0;
+  for (const at of hits) {
+    if (at[0] < next) continue; // overlaps the previous span: counted, not returned
+    next = at[at.length - 1] + 1;
+    const out = [...rLines];
+    // Right to left, so the indices of earlier gaps stay valid as later ones change size.
+    for (let g = content.length - 2; g >= 0; g--) {
+      const fileBlanks = lines.slice(at[g] + 1, at[g + 1]).map((l) => l.text);
+      const searchBlanks = content[g + 1] - content[g] - 1;
+      if (fileBlanks.length === searchBlanks) continue;
+      const p = posL[content[g]];
+      const q = posR[content[g + 1]];
+      if (p === null || q === null || q <= p) continue;
+      // The blank lines that end the gap in the replacement. When there are as
+      // many as the search had there, the model did not mean to change them:
+      // they become the file's. Code the model inserted into the gap stays,
+      // ahead of them (a method added between two methods keeps the blank line
+      // before the next one).
+      let trail = 0;
+      while (trail < q - p - 1 && isBlank(out[q - 1 - trail])) trail++;
+      if (trail !== searchBlanks) continue;
+      out.splice(q - trail, trail, ...fileBlanks);
+    }
+    const last = lines[at[at.length - 1]];
+    found.push({
+      start: lines[at[0]].start,
+      end: endsWithBreak ? last.end : last.contentEnd,
+      count: 0,
+      tier: 'blank-lines',
+      replacement: applyEol(out.join('\n') + (replaceEndsWithBreak ? '\n' : ''), eol),
+    });
+  }
+  return found.map((m) => ({ ...m, count: hits.length }));
 }
 
 /**
@@ -447,6 +604,12 @@ export function matchToleranceNote(match: EditMatch, filePath: string, text: str
       return (
         `[note: your search's indentation did not match ${filePath}. It was matched on content and your ` +
         `replacement was re-indented to the file's indentation. Verify the result.]\n`
+      );
+    case 'blank-lines':
+      return (
+        `[note: your search's blank lines did not match ${filePath} (a blank line left out or added). It was ` +
+        `matched ignoring blank lines, and the file's own blank lines were kept between the lines your ` +
+        `replacement left unchanged. Verify the result.]\n`
       );
   }
 }
