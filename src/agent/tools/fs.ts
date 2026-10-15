@@ -2188,6 +2188,7 @@ const TIER_LABEL: Record<MatchTier, string> = {
   eol: 'line-ending differences',
   'trailing-space': 'trailing whitespace',
   indent: 'indentation',
+  'blank-lines': 'blank lines',
 };
 
 /**
