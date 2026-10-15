@@ -20,7 +20,7 @@ import { detectPackageInstall, installQuestion, installRefusal } from './executo
 import { WRITE_TOOLS, NATIVE_MODAL_APPROVAL_TOOLS, resolveApprovalNeeded } from './executor/permissionsGate.js';
 import { runHook } from './executor/hookRunner.js';
 import { validateToolInput } from './executor/inputValidator.js';
-import { remapParamSynonyms, coerceParamTypes } from './executor/paramRemap.js';
+import { remapParamSynonyms, coerceParamTypes, stripEchoedCarriageReturns } from './executor/paramRemap.js';
 import { resolveToolNameAlias } from './executor/toolNameAlias.js';
 import { isExampleReplay, buildExampleReplayError } from './executor/exampleReplayGuard.js';
 import { recordBounce, clearBounces, escalationSuffix } from './executor/bounceEscalation.js';
@@ -197,6 +197,14 @@ export async function executeTool(
     logger?.info(`Tool ${toolUse.name}: ${typeCoercion.notes.join('; ')}`);
     toolUse.input = typeCoercion.input;
     remap.notes.push(...typeCoercion.notes);
+  }
+  if (toolUse.name === 'edit_file' || toolUse.name === 'write_file') {
+    const cr = stripEchoedCarriageReturns(toolUse.input);
+    if (cr.notes.length > 0) {
+      logger?.info(`Tool ${toolUse.name}: ${cr.notes.join('; ')}`);
+      toolUse.input = cr.input;
+      remap.notes.push(...cr.notes);
+    }
   }
 
   // --- Validate input shape against the tool's declared schema ---

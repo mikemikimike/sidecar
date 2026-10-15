@@ -811,6 +811,39 @@ describe('executeTool', () => {
     expect(mockConfirm).toHaveBeenCalled();
   });
 
+  // #155: gemma4:e4b echoes a carriage return as the literal text <0x0D>. The
+  // tool must receive the search without it (so the CRLF tier can match), and
+  // the model must be told why its text changed.
+  it('strips an echoed <0x0D> from edit_file input before the tool runs, and discloses it', async () => {
+    const executor = vi.fn().mockResolvedValue('File edited: pkg/mod.py');
+    mockedFindTool.mockReturnValue({
+      definition: {
+        name: 'edit_file',
+        description: '',
+        input_schema: {
+          type: 'object',
+          properties: { path: { type: 'string' }, search: { type: 'string' }, replace: { type: 'string' } },
+          required: ['path', 'search', 'replace'],
+        },
+      },
+      executor,
+      requiresApproval: false,
+    });
+    const result = await executeTool(
+      makeToolUse('edit_file', {
+        path: 'pkg/mod.py',
+        search: '    if domain:<0x0D>\n        return 1',
+        replace: '    if domain:<0x0D>\n        return 2',
+      }),
+      { approvalMode: 'autonomous' },
+    );
+    expect(executor.mock.calls[0][0]).toMatchObject({
+      search: '    if domain:\n        return 1',
+      replace: '    if domain:\n        return 2',
+    });
+    expect(String(result.content)).toMatch(/literal text <0x0D>/);
+  });
+
   // ------------------------------------------------------------------
   // Installing a checker is the user's call, in every mode
   // ------------------------------------------------------------------

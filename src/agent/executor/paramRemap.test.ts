@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { remapParamSynonyms, coerceParamTypes } from './paramRemap.js';
+import { remapParamSynonyms, coerceParamTypes, stripEchoedCarriageReturns } from './paramRemap.js';
 
 const WRITE_FILE_SCHEMA = {
   type: 'object' as const,
@@ -236,6 +236,49 @@ describe('coerceParamTypes — line arrays for multi-line text', () => {
   it('leaves a non-text string param, a mixed array and an empty array to the validator', () => {
     const r = coerceParamTypes({ path: ['a.ts'], search: ['a', 1], replace: [] }, editSchema);
     expect(r.input).toEqual({ path: ['a.ts'], search: ['a', 1], replace: [] });
+    expect(r.notes).toEqual([]);
+  });
+});
+
+// #155 (ML-02): gemma4:e4b echoes each carriage return it read as the literal
+// text <0x0D>. On the SWE canary 1,221 multi-line searches carried it and none
+// wrote; in `replace` it was written into files. Cases from the investigation.
+describe('stripEchoedCarriageReturns', () => {
+  it('removes the token before line breaks in search and replace, and says so', () => {
+    const r = stripEchoedCarriageReturns({
+      path: 'pkg/mod.py',
+      search: '    if domain:<0x0D>\n        return 1',
+      replace: '    if domain:<0x0D>\n        return 2',
+    });
+    expect(r.input).toEqual({
+      path: 'pkg/mod.py',
+      search: '    if domain:\n        return 1',
+      replace: '    if domain:\n        return 2',
+    });
+    expect(r.notes).toHaveLength(2);
+    expect(r.notes[0]).toMatch(/'search' contained the literal text <0x0D>/);
+  });
+
+  it('removes it at the very end, and from write_file content', () => {
+    expect(stripEchoedCarriageReturns({ content: 'name = pkg<0x0D>\nversion = 1.1<0x0D>' }).input).toEqual({
+      content: 'name = pkg\nversion = 1.1',
+    });
+  });
+
+  it('the recorded seaborn shape: a comment line ending in the token', () => {
+    const replace =
+      '    # This class implements the Stat interface, exposing the _fit_predict method.<0x0D>\n' +
+      '    # Other stats should adopt this pattern.';
+    expect(stripEchoedCarriageReturns({ replace }).input).toEqual({
+      replace:
+        '    # This class implements the Stat interface, exposing the _fit_predict method.\n    # Other stats should adopt this pattern.',
+    });
+  });
+
+  it('keeps <0x0D> that is not at a line end, and leaves other params alone', () => {
+    const input = { path: 'a<0x0D>', search: 'the byte <0x0D> is CR', replace: 'x' };
+    const r = stripEchoedCarriageReturns(input);
+    expect(r.input).toBe(input);
     expect(r.notes).toEqual([]);
   });
 });
