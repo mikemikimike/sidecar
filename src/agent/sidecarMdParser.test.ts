@@ -68,6 +68,14 @@ describe('parseSidecarMd — @paths sentinel', () => {
     expect(parsed.hasAnyPathSentinel).toBe(true);
   });
 
+  // #116: the capture group excluded '-', so any glob with a hyphen made the
+  // whole sentinel fail and the section applied everywhere.
+  it('accepts globs with hyphens', () => {
+    const parsed = parseSidecarMd(['## Lib', '<!-- @paths: src/my-lib/**, web-ui/*.tsx -->', 'body'].join('\n'));
+    expect(parsed.sections[0].paths).toEqual(['src/my-lib/**', 'web-ui/*.tsx']);
+    expect(parsed.sections[0].priority).toBe('scoped');
+  });
+
   it('assigns priority "always" when no sentinel is present', () => {
     const parsed = parseSidecarMd('## Build\n- Run tests');
     expect(parsed.sections[0].priority).toBe('always');

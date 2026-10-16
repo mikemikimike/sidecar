@@ -76,7 +76,9 @@ export interface ParsedSidecarMd {
 }
 
 const HEADING_RE = /^(#{2,3})\s+(.+?)\s*$/;
-const PATHS_SENTINEL_RE = /^\s*<!--\s*@paths:\s*([^-]+?)\s*-->\s*$/;
+// `(.+?)`, not `([^-]+?)`: a glob with a hyphen (`src/my-lib/**`) never
+// matched, so its section silently applied to every path (#116).
+const PATHS_SENTINEL_RE = /^\s*<!--\s*@paths:\s*(.+?)\s*-->\s*$/;
 
 /**
  * Parse a SIDECAR.md body into a preamble + H2-bounded sections.

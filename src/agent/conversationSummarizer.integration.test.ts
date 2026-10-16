@@ -290,7 +290,7 @@ describe('ConversationSummarizer — Integration with Agent Loop', () => {
               type: 'thinking' as const,
               thinking: `Deep analysis for query ${i}...`.repeat(20),
             },
-            { type: 'text' as const, text: `Response ${i}...`.repeat(10) },
+            { type: 'text' as const, text: `Response ${i}...`.repeat(200) },
           ],
         });
       }
