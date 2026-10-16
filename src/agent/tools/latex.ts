@@ -1,4 +1,5 @@
 import { workspace, Uri } from 'vscode';
+import * as path from 'path';
 import type { ToolDefinition } from '../../ollama/types.js';
 import {
   getRootUri,
@@ -146,9 +147,11 @@ export async function latexCompile(input: Record<string, unknown>, context?: Too
       if (found.length === 0) {
         return 'No .tex file found. Specify `file="path/to/main.tex"`.';
       }
+      // Relative to the root, with forward slashes: stripping `root + '/'`
+      // never matched a backslash fsPath on Windows (#117).
       const workspacePath = workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
       const texPath = found[0].fsPath;
-      file = workspacePath ? texPath.replace(workspacePath + '/', '') : texPath;
+      file = workspacePath ? path.relative(workspacePath, texPath).split(path.sep).join('/') : texPath;
       // Verify the detected file exists under the root
       await workspace.fs.stat(Uri.joinPath(root, file));
     } catch {

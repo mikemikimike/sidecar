@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { analyzeDependencies } from './depAnalysis.js';
+import { analyzeDependencies, findUnusedNodeDeps } from './depAnalysis.js';
+import * as cp from 'child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 // Mock vscode workspace
 vi.mock('vscode', () => ({
@@ -170,5 +174,49 @@ describe('analyzeDependencies', () => {
 
     const result = await analyzeDependencies();
     expect(result).toContain('Go');
+  });
+});
+
+// #117: the unused-deps check shelled out to grep (absent on Windows, and its
+// ENOENT read as "unused"), and `npm outdated` reports on a non-zero exit.
+describe('Node dependency checks (#117)', () => {
+  it('finds imports in src/ without a grep binary', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'deps-'));
+    try {
+      mkdirSync(join(root, 'src', 'lib'), { recursive: true });
+      writeFileSync(join(root, 'src', 'a.ts'), "import express from 'express';\n");
+      writeFileSync(join(root, 'src', 'lib', 'b.js'), "const fp = require('lodash/fp');\n");
+      writeFileSync(join(root, 'src', 'c.ts'), '// mentions chalk in a comment only\n');
+      const unused = await findUnusedNodeDeps(['express', 'lodash', 'chalk', 'left-pad'], root);
+      expect(unused).toEqual(['chalk', 'left-pad']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('claims nothing when there is no src/ to search', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'deps-'));
+    try {
+      expect(await findUnusedNodeDeps(['express'], root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports outdated packages although npm outdated exits 1', async () => {
+    (mockWorkspace as any).workspaceFolders = [{ uri: { fsPath: '/test/project' } }];
+    vi.mocked(vscode.workspace.fs.readFile as any).mockResolvedValue(
+      Buffer.from(JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { express: '^4.0.0' } })),
+    );
+    vi.mocked(cp.exec as any).mockImplementationOnce((_cmd: string, _opts: unknown, cb: any) => {
+      const err = Object.assign(new Error('Command failed: npm outdated --json'), {
+        code: 1,
+        stdout: JSON.stringify({ express: { current: '4.0.0', wanted: '4.21.0', latest: '5.1.0' } }),
+      });
+      process.nextTick(() => cb(err));
+    });
+    const result = await analyzeDependencies();
+    expect(result).toContain('## Outdated Packages');
+    expect(result).toContain('| express | 4.0.0 | 4.21.0 | 5.1.0 |');
   });
 });

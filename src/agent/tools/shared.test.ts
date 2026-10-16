@@ -163,12 +163,18 @@ describe('isProtectedWritePath', () => {
 // shellQuote / hasShellMetachar / formatToolError
 // ---------------------------------------------------------------------------
 describe('shellQuote', () => {
-  it('wraps in single quotes', () => {
-    expect(shellQuote('hello')).toBe("'hello'");
+  // #117: double quotes, which bash, cmd.exe and PowerShell all honour; cmd
+  // reads single quotes as part of the file name.
+  it('wraps a plain value in double quotes', () => {
+    expect(shellQuote('hello')).toBe('"hello"');
+    expect(shellQuote('my docs/main file.tex')).toBe('"my docs/main file.tex"');
+    expect(shellQuote("it's")).toBe('"it\'s"');
   });
 
-  it('escapes embedded single quotes', () => {
-    expect(shellQuote("it's")).toBe("'it'\\''s'");
+  it('keeps POSIX single quotes for characters a shell expands inside double quotes', () => {
+    expect(shellQuote('$HOME')).toBe("'$HOME'");
+    expect(shellQuote("it's $x")).toBe("'it'\\''s $x'");
+    expect(shellQuote('%PATH%')).toBe("'%PATH%'");
   });
 });
 

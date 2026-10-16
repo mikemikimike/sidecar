@@ -33,7 +33,7 @@ vi.mock('child_process', () => ({
 }));
 
 import { exec } from 'child_process';
-import { systemMonitor } from './systemMonitor.js';
+import { systemMonitor, cpuBusyPercent } from './systemMonitor.js';
 
 // Promisify wraps the mock, so we need to make exec call its callback.
 // The `exec(cmd, opts, cb)` and `exec(cmd, cb)` overloads mean `opts` can
@@ -120,5 +120,24 @@ describe('systemMonitor', () => {
     const result = await systemMonitor({});
     expect(result).toContain('linux');
     expect(result).toContain('6.5.0');
+  });
+});
+
+// #117: os.loadavg() is all zeros on Windows, so utilisation always read 0%.
+describe('CPU utilisation on Windows', () => {
+  const t = (user: number, idle: number) => ({ model: 'm', speed: 1, times: { user, nice: 0, sys: 0, idle, irq: 0 } });
+
+  it('computes busy share from two CPU-time snapshots', () => {
+    expect(cpuBusyPercent([t(100, 100), t(0, 0)], [t(175, 125), t(50, 50)])).toBe(62.5);
+    expect(cpuBusyPercent([t(5, 5)], [t(5, 5)])).toBe(0);
+  });
+
+  it('samples CPU times instead of reporting the zero load average', async () => {
+    mockExecFail();
+    osState.platform = 'win32';
+    osState.loadavg = [0, 0, 0];
+    const result = await systemMonitor({});
+    expect(result).toContain('Utilisation:');
+    expect(result).not.toContain('Load avg');
   });
 });

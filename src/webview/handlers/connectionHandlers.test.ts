@@ -6,6 +6,7 @@ vi.mock('child_process', async (importOriginal) => {
   return {
     ...actual,
     execSync: vi.fn(),
+    execFileSync: vi.fn(),
     spawn: vi.fn(() => ({ unref: vi.fn() })),
   };
 });
@@ -202,6 +203,18 @@ describe('handleRestartOllama', () => {
       (c) => (c[0] as { command: string }).command === 'assistantMessage',
     );
     expect((assistantCall![0] as { content: string }).content).toContain('restarted successfully');
+  });
+
+  it("stops Ollama with the platform's own tool (#117: no pkill on Windows)", async () => {
+    const providerReachability = await import('../../config/providerReachability.js');
+    vi.spyOn(providerReachability, 'isProviderReachable').mockResolvedValue(true);
+    const { execFileSync } = await import('child_process');
+
+    await handleRestartOllama(makeState({ providerType: 'ollama', isLocalOllama: true }) as never);
+
+    const [bin, args] = vi.mocked(execFileSync).mock.calls.at(-1)!;
+    if (process.platform === 'win32') expect([bin, args]).toEqual(['taskkill', ['/F', '/IM', 'ollama.exe']]);
+    else expect([bin, args]).toEqual(['pkill', ['-x', 'ollama']]);
   });
 
   it('posts connection error when Ollama does not come back online', async () => {

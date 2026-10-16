@@ -1,5 +1,3 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { ToolDefinition } from '../ollama/types.js';
 import type { MCPManager } from './mcpManager.js';
 import { getConfig, detectProvider, isLocalOpenAiCompatible, type SideCarConfig } from '../config/settings.js';
@@ -8,7 +6,7 @@ import { redactSecrets } from './securityScanner.js';
 
 import type { RegisteredTool, ToolExecutorContext } from './tools/shared.js';
 import { getRoot } from './tools/shared.js';
-import { parseArgv } from './lintFix.js';
+import { parseArgv, execPortable } from './lintFix.js';
 import { findSdkTool, getSdkToolDefinitions } from '../sdk/registry.js';
 // Each tools/*.ts module exports its own `<name>Tools: RegisteredTool[]` array.
 // TOOL_REGISTRY is built by spreading them. Value-level re-exports below
@@ -66,8 +64,6 @@ export type { ClarifyFn, ToolExecutorContext, RegisteredTool } from './tools/sha
 export { disposeShellSession, setSymbolGraph, setSymbolEmbeddings } from './tools/runtime.js';
 export { disposeAgentTerminalExecutor } from './tools/shell.js';
 export { getDiagnostics } from './tools/diagnostics.js';
-
-const execFileAsync = promisify(execFile);
 
 // --- Built-in tool registry ---
 
@@ -396,7 +392,7 @@ function getCustomToolRegistry(injectedConfig?: SideCarConfig): RegisteredTool[]
         if (val !== undefined) env[key] = val;
       }
       const [bin, args] = parseArgv(cfg.command);
-      const { stdout, stderr } = await execFileAsync(bin, args, { cwd, timeout: 30_000, env, maxBuffer: 1024 * 1024 });
+      const { stdout, stderr } = await execPortable(bin, args, { cwd, timeout: 30_000, env, maxBuffer: 1024 * 1024 });
       return (stdout + (stderr ? '\nSTDERR:\n' + stderr : '')).trim() || '(no output)';
     },
     requiresApproval: true,

@@ -2593,6 +2593,7 @@ vi.mock('child_process', async (importOriginal) => {
   return {
     ...actual,
     execSync: vi.fn(),
+    execFileSync: vi.fn(),
     spawn: vi.fn(() => ({ unref: vi.fn() })),
   };
 });

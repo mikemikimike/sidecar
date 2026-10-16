@@ -5745,6 +5745,10 @@
               actionBtn.textContent = 'Compacting...';
               actionBtn.disabled = true;
               vscode.postMessage({ command: 'compactContext' });
+            } else if (msg.errorActionCommand === 'restartOllama') {
+              actionBtn.textContent = 'Restarting...';
+              actionBtn.disabled = true;
+              vscode.postMessage({ command: 'restartOllama' });
             } else if (msg.errorActionCommand === 'retry') {
               const lastUser = [...messagesContainer.querySelectorAll('.message.user')].pop();
               if (lastUser) {

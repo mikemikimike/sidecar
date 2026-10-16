@@ -86,7 +86,10 @@ export class DriftDiagnostics {
         const watcher = workspace.createFileSystemWatcher(`${root.uri.fsPath}/${glob}`);
         const schedule = (uri: Uri) => {
           const p = uri.fsPath;
-          if (EXCLUDE_SEGMENTS.some((seg) => p.includes(`/${seg}/`))) return;
+          // fsPath has backslashes on Windows, where `/node_modules/` never
+          // matched and every vendored manifest was scanned (#117).
+          const slashed = p.replace(/\\/g, '/');
+          if (EXCLUDE_SEGMENTS.some((seg) => slashed.includes(`/${seg}/`))) return;
           this.scheduleScan(p);
         };
         this.disposables.push(watcher, watcher.onDidChange(schedule), watcher.onDidCreate(schedule));

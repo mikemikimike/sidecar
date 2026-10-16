@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runLint, detectLintCommand, parseArgv } from './lintFix.js';
+import { runLint, detectLintCommand, parseArgv, execPortable } from './lintFix.js';
 import * as vscode from 'vscode';
 
 vi.mock('vscode', () => ({
@@ -18,6 +18,13 @@ vi.mock('vscode', () => ({
     },
   },
 }));
+
+/** The command execPortable launched, unwrapping the cmd.exe shim wrapper on Windows. */
+function launched(bin: string, args: string[]): [string, string[]] {
+  if (bin !== 'cmd.exe') return [bin, args];
+  const [inner, ...rest] = args[3].replace(/^"|"$/g, '').split(' ');
+  return [inner, rest];
+}
 
 // Shared execFile vi.fn — hoisted so child_process + util mocks both see it.
 const { sharedExecFile } = vi.hoisted(() => ({ sharedExecFile: vi.fn() }));
@@ -170,8 +177,7 @@ describe('lintFix', () => {
       // execFile receives (bin, args, opts, cb) — not a raw shell string.
       mockExecFile.mockImplementation(
         (bin: string, args: string[], opts: any, cb: (err: any, stdout: string, stderr: string) => void) => {
-          expect(bin).toBe('npm');
-          expect(args).toEqual(['run', 'lint']);
+          expect(launched(bin, args)).toEqual(['npm', ['run', 'lint']]);
           cb(null, 'Success', '');
         },
       );
@@ -320,8 +326,8 @@ describe('lintFix', () => {
       mockWorkspace.workspaceFolders = [{ uri: { fsPath: '/p' } }];
       mockWorkspace.fs.readFile.mockResolvedValue(Buffer.from(JSON.stringify({ scripts: { lint: 'eslint' } })));
       mockExecFile.mockImplementation(
-        (bin: string, _args: string[], _opts: any, cb: (err: any, stdout: string, stderr: string) => void) => {
-          expect(bin).toBe('npm');
+        (bin: string, args: string[], _opts: any, cb: (err: any, stdout: string, stderr: string) => void) => {
+          expect(launched(bin, args)[0]).toBe('npm');
           cb(null, 'ok', '');
         },
       );
@@ -356,10 +362,39 @@ describe('parseArgv', () => {
   });
 
   it('handles escaped spaces', () => {
-    expect(parseArgv('my\\ tool --flag')).toEqual(['my tool', ['--flag']]);
+    expect(parseArgv('my\\ tool --flag', 'linux')).toEqual(['my tool', ['--flag']]);
   });
 
   it('returns empty bin for empty string', () => {
     expect(parseArgv('')).toEqual(['', []]);
+  });
+});
+
+// #117: Windows. A backslash is the path separator there, and npm/npx are
+// .cmd scripts that execFile cannot start without a shell.
+describe('Windows command handling (#117)', () => {
+  it('keeps backslashes in Windows paths', () => {
+    expect(parseArgv('eslint C:\\proj\\src --fix', 'win32')).toEqual(['eslint', ['C:\\proj\\src', '--fix']]);
+  });
+
+  it('still treats a backslash before a space or quote as an escape elsewhere', () => {
+    expect(parseArgv('ls my\\ dir a\\b', 'linux')).toEqual(['ls', ['my dir', 'a\\b']]);
+  });
+
+  it('runs npm through cmd.exe on Windows, quoting arguments with spaces', async () => {
+    sharedExecFile.mockImplementation((_b: string, _a: string[], _o: any, cb: any) => cb(null, 'ok', ''));
+    await execPortable('npm', ['run', 'lint', 'a b'], { cwd: '/p' }, 'win32');
+    const [bin, args, opts] = sharedExecFile.mock.calls.at(-1)!;
+    expect(bin).toBe('cmd.exe');
+    expect(args).toEqual(['/d', '/s', '/c', '"npm run lint "a b""']);
+    expect(opts).toMatchObject({ cwd: '/p', windowsVerbatimArguments: true });
+  });
+
+  it('runs other binaries, and npm elsewhere, directly', async () => {
+    sharedExecFile.mockImplementation((_b: string, _a: string[], _o: any, cb: any) => cb(null, 'ok', ''));
+    await execPortable('eslint', ['.'], {}, 'win32');
+    expect(sharedExecFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['eslint', ['.']]);
+    await execPortable('npm', ['test'], {}, 'linux');
+    expect(sharedExecFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['npm', ['test']]);
   });
 });

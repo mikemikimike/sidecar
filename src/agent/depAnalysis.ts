@@ -1,9 +1,10 @@
 import { workspace, Uri } from 'vscode';
-import { exec, execFile } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 /**
  * Analyze project dependencies — works for Node.js projects.
@@ -92,8 +93,7 @@ async function analyzeNodeDeps(pkg: Record<string, unknown>, cwd: string): Promi
 
   // Check for outdated
   try {
-    const { stdout } = await execAsync('npm outdated --json', { cwd, timeout: 30_000 });
-    const outdated = JSON.parse(stdout || '{}');
+    const outdated = JSON.parse((await npmOutdatedJson(cwd)) || '{}');
     const entries = Object.entries(outdated);
     if (entries.length > 0) {
       lines.push('', '## Outdated Packages', '');
@@ -105,28 +105,61 @@ async function analyzeNodeDeps(pkg: Record<string, unknown>, cwd: string): Promi
       }
     }
   } catch {
-    // npm outdated returns non-zero when packages are outdated
+    // npm missing, offline, or unparseable output
   }
 
   return lines.join('\n');
 }
 
-async function findUnusedNodeDeps(deps: string[], cwd: string): Promise<string[]> {
-  const unused: string[] = [];
-  for (const dep of deps) {
-    try {
-      const { stdout } = await execFileAsync(
-        'grep',
-        ['-r', dep, 'src/', '--include=*.ts', '--include=*.js', '--include=*.tsx', '--include=*.jsx', '-l'],
-        { cwd, timeout: 10_000 },
-      );
-      if (!stdout.trim()) unused.push(dep);
-    } catch {
-      // grep returns non-zero when no matches — that means unused
-      unused.push(dep);
+/**
+ * `npm outdated --json`'s report. npm exits 1 whenever anything IS outdated,
+ * so the report arrives on the rejection -- reading only the success path
+ * dropped the section in exactly the case it exists for (#117).
+ */
+async function npmOutdatedJson(cwd: string): Promise<string> {
+  try {
+    return (await execAsync('npm outdated --json', { cwd, timeout: 30_000 })).stdout;
+  } catch (err) {
+    const stdout = (err as { stdout?: string }).stdout;
+    if (stdout?.trim()) return stdout;
+    throw err;
+  }
+}
+
+const SOURCE_EXT = /\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/;
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out']);
+
+async function readSources(dir: string, into: string[]): Promise<void> {
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name)) await readSources(full, into);
+    } else if (SOURCE_EXT.test(entry.name)) {
+      into.push(await fs.readFile(full, 'utf-8'));
     }
   }
-  return unused;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Production deps no file under `src/` imports. Searched in-process: this
+ * shelled out to `grep`, which Windows doesn't have, and the ENOENT was read
+ * as "no match" -- so every dependency was reported unused (#117). A dep
+ * counts as used when it appears as a quoted module specifier (`'pkg'` or
+ * `'pkg/sub'`), not merely as a substring somewhere in the text.
+ */
+export async function findUnusedNodeDeps(deps: string[], cwd: string): Promise<string[]> {
+  const sources: string[] = [];
+  try {
+    await readSources(path.join(cwd, 'src'), sources);
+  } catch {
+    return []; // no src/ -- nothing to judge by, so claim nothing
+  }
+  const text = sources.join('\n');
+  return deps.filter((dep) => !new RegExp(`['"\`]${escapeRegExp(dep)}(/[^'"\`]*)?['"\`]`).test(text));
 }
 
 async function analyzePythonDeps(cwd: string): Promise<string> {

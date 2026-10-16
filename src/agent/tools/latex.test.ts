@@ -136,6 +136,21 @@ describe('latexCompile — guard paths', () => {
     expect(result).toContain('No .tex file found');
   });
 
+  it('auto-detects a .tex file as a root-relative path on this platform (#117)', async () => {
+    const vscode = await import('vscode');
+    const path = await import('path');
+    // A host-native fsPath -- backslashes on Windows, where stripping
+    // `root + '/'` never matched and detection always failed.
+    vi.mocked(vscode.workspace.findFiles).mockResolvedValueOnce([
+      { fsPath: path.join('/workspace', 'docs', 'main.tex') } as never,
+    ]);
+    vi.mocked(vscode.workspace.fs.stat).mockResolvedValueOnce({} as never);
+    const session = makeSession('Output written on main.pdf (1 page).');
+    const result = await latexCompile({}, makeContext(true, 'pdflatex', session));
+    expect(result).toContain('successful');
+    expect(JSON.stringify(session.execute.mock.calls)).toContain('docs/main.tex');
+  });
+
   it('returns error when session.execute throws', async () => {
     const session = makeSession('', 0, new Error('pdflatex not found'));
     const ctx = makeContext(true, 'pdflatex', session);
@@ -246,13 +261,13 @@ describe('latexCompile — shell-injection hardening', () => {
     expect(session.execute).not.toHaveBeenCalled();
   });
 
-  it('single-quotes the file path in the compile command', async () => {
+  it('double-quotes the file path in the compile command (#117: cmd.exe keeps single quotes)', async () => {
     const session = makeSession('Output written on main.pdf');
     const ctx = makeContext(true, 'pdflatex', session);
     await latexCompile({ file: 'paper/main.tex' }, ctx);
     const calls = session.execute.mock.calls as unknown[][];
     const compileCall = (calls as [string][]).find(([cmd]) => cmd.includes('pdflatex'));
-    expect(compileCall![0]).toContain("'paper/main.tex'");
-    expect(compileCall![0]).not.toContain('"paper/main.tex"');
+    expect(compileCall![0]).toContain('"paper/main.tex"');
+    expect(compileCall![0]).not.toContain("'paper/main.tex'");
   });
 });

@@ -240,6 +240,10 @@ class WindowsRecorder implements RecordingHandle {
           this.proc = spawn('powershell', [
             '-NonInteractive',
             '-NoProfile',
+            // Windows' default policy (Restricted) refuses to run a .ps1 file,
+            // so recording failed on a stock machine (#117).
+            '-ExecutionPolicy',
+            'Bypass',
             '-File',
             this.scriptPath,
             '-OutPath',

@@ -133,14 +133,14 @@ describe('isProtectedWritePath', () => {
 });
 
 describe('shellQuote', () => {
-  it('wraps simple values in single quotes', () => {
-    expect(shellQuote('foo.test.ts')).toBe("'foo.test.ts'");
+  it('wraps simple values in double quotes, which every shell honours (#117)', () => {
+    expect(shellQuote('foo.test.ts')).toBe('"foo.test.ts"');
   });
-  it('escapes embedded single quotes so the quoting stays balanced', () => {
-    expect(shellQuote("foo's test.ts")).toBe("'foo'\\''s test.ts'");
+  it('keeps the POSIX form, balanced, when a value holds an expanding character', () => {
+    expect(shellQuote("foo's $x.ts")).toBe("'foo'\\''s $x.ts'");
   });
   it('safely handles spaces inside the path', () => {
-    expect(shellQuote('some file.ts')).toBe("'some file.ts'");
+    expect(shellQuote('some file.ts')).toBe('"some file.ts"');
   });
 });
 
