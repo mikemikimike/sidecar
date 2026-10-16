@@ -82,6 +82,9 @@ export interface ModelCapabilityProfile {
 export function detectModelFamily(model: string): ModelFamily {
   const m = model.toLowerCase();
   if (m.includes('claude') || m.includes('anthropic')) return 'claude';
+  // gpt-oss is OpenAI's open-weights model, usually run locally (Ollama's gpt-oss:20b):
+  // not the hosted GPT family, so it must not inherit the frontier tier (#112).
+  if (m.includes('gpt-oss')) return 'unknown';
   if (/\bgpt\b|gpt-|\bo[1-4]\b|^o[1-4]-/.test(m) || m.includes('openai')) return 'gpt';
   if (m.includes('gemini')) return 'gemini';
   if (m.includes('gemma')) return 'gemma';

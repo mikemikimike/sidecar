@@ -44,7 +44,8 @@ export function parseAwsCredentialsIni(content: string, profile: string): Record
  */
 export function resolveAwsCredentials(
   env: NodeJS.ProcessEnv = process.env,
-  credentialsPath: string = path.join(os.homedir(), '.aws', 'credentials'),
+  // AWS_SHARED_CREDENTIALS_FILE is the AWS CLI/SDK's documented override (#112).
+  credentialsPath: string = env.AWS_SHARED_CREDENTIALS_FILE || path.join(os.homedir(), '.aws', 'credentials'),
 ): AwsCredentials | null {
   if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
     return {

@@ -54,6 +54,42 @@ describe('signRequest (SigV4)', () => {
     expect(headers.Authorization).toContain('content-type'); // content-type folded into signed headers
   });
 
+  // #112: AWS (every service but S3) canonicalizes the path AS SENT, encoding
+  // it again. Signing the once-encoded path failed every InvokeModel call with
+  // SignatureDoesNotMatch, since every Bedrock model id has a ':'.
+  it('signs the path encoded twice and sends it encoded once (non-S3 SigV4)', () => {
+    const { url, canonicalRequest } = signRequest({
+      method: 'POST',
+      origin: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+      rawPath: '/model/anthropic.claude-sonnet-4-20250514-v1:0/invoke',
+      region: 'us-east-1',
+      service: 'bedrock',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"x":1}',
+      credentials: { accessKeyId: 'AKID', secretAccessKey: 'secret' },
+      date: new Date('2025-01-01T00:00:00Z'),
+    });
+    expect(url).toBe(
+      'https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-sonnet-4-20250514-v1%3A0/invoke',
+    );
+    expect(canonicalRequest.split('\n')[1]).toBe('/model/anthropic.claude-sonnet-4-20250514-v1%253A0/invoke');
+  });
+
+  it('a path with nothing to encode signs the same as before', () => {
+    const { canonicalRequest } = signRequest({
+      method: 'GET',
+      origin: 'https://bedrock.us-east-1.amazonaws.com',
+      rawPath: '/inference-profiles',
+      region: 'us-east-1',
+      service: 'bedrock',
+      headers: {},
+      body: '',
+      credentials: { accessKeyId: 'AKID', secretAccessKey: 'secret' },
+      date: new Date('2025-01-01T00:00:00Z'),
+    });
+    expect(canonicalRequest.split('\n')[1]).toBe('/inference-profiles');
+  });
+
   it('includes the session token in signed headers when present', () => {
     const { headers } = signRequest({
       method: 'POST',

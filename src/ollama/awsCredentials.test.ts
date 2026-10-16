@@ -46,3 +46,16 @@ describe('resolveAwsCredentials', () => {
     expect(resolveAwsCredentials({}, '/nonexistent/credentials')).toBeNull();
   });
 });
+
+// #112: AWS_SHARED_CREDENTIALS_FILE (the AWS CLI/SDK override) was ignored.
+describe('AWS_SHARED_CREDENTIALS_FILE', () => {
+  it('reads the credentials file it names', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-aws-')), 'creds');
+    fs.writeFileSync(file, '[default]\naws_access_key_id = AKIDFROMFILE\naws_secret_access_key = s3cr3t\n');
+    const creds = resolveAwsCredentials({ AWS_SHARED_CREDENTIALS_FILE: file } as NodeJS.ProcessEnv);
+    expect(creds?.accessKeyId).toBe('AKIDFROMFILE');
+  });
+});

@@ -184,14 +184,26 @@ async function* downloadFile(args: DownloadArgs): AsyncGenerator<ImportProgress>
   // observe chunks inline via an async iterator. A plain for-await over the
   // web stream works without needing to shim into a Node Readable.
   const writer = fs.createWriteStream(destPath);
+  // Listen for a write error from the start (#112): attached only after
+  // end(), an ENOSPC mid-download was an unhandled 'error' event, and a
+  // pending 'drain' wait never resolved, so the import hung.
+  let writeError: Error | null = null;
+  const failed = new Promise<never>((_resolve, reject) =>
+    writer.on('error', (err) => {
+      writeError = err;
+      reject(err);
+    }),
+  );
+  failed.catch(() => {}); // observed below; never an unhandled rejection
   try {
     for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      if (writeError) throw writeError;
       if (signal.aborted) {
         writer.destroy();
         throw new DOMException('Aborted', 'AbortError');
       }
       const canContinue = writer.write(chunk);
-      if (!canContinue) await new Promise<void>((resolve) => writer.once('drain', resolve));
+      if (!canContinue) await Promise.race([new Promise<void>((resolve) => writer.once('drain', resolve)), failed]);
       fileCompleted += chunk.byteLength;
       onBytes(chunk.byteLength);
       if (fileCompleted - lastYieldBytes >= YIELD_EVERY_BYTES || fileCompleted === contentLength) {
@@ -208,10 +220,7 @@ async function* downloadFile(args: DownloadArgs): AsyncGenerator<ImportProgress>
       }
     }
     writer.end();
-    await new Promise<void>((resolve, reject) => {
-      writer.on('finish', () => resolve());
-      writer.on('error', reject);
-    });
+    await Promise.race([new Promise<void>((resolve) => writer.on('finish', () => resolve())), failed]);
   } catch (err) {
     writer.destroy();
     // Clean up the partial file so a retry starts fresh (until we add

@@ -2,8 +2,11 @@ import { createHash, createHmac } from 'crypto';
 
 // AWS Signature Version 4 signing — enough for Bedrock Runtime POSTs. Pure
 // (no VS Code imports), so it's unit-testable against AWS's published vectors.
-// We sign from the RAW path and send the request to the same canonicalized
-// path, so there's no double-encoding ambiguity (the S3-only rule).
+// The request is sent to the RFC 3986-encoded path, and for every service but
+// S3 AWS builds the canonical path by encoding the path AS SENT once more: a
+// Bedrock model id `...v1:0` travels as `v1%3A0` and is signed as `v1%253A0`
+// (botocore does the same). Signing the once-encoded path made every
+// InvokeModel call fail with SignatureDoesNotMatch (#112).
 
 export interface AwsCredentials {
   accessKeyId: string;
@@ -33,6 +36,8 @@ export interface SignInput {
 export interface SignedRequest {
   url: string;
   headers: Record<string, string>;
+  /** The SigV4 canonical request that was signed (for tests and debugging). */
+  canonicalRequest: string;
 }
 
 /** RFC 3986 encode a single path segment (unreserved: A-Za-z0-9-_.~). */
@@ -80,7 +85,9 @@ function amzDate(date: Date): { amzdate: string; datestamp: string } {
 export function signRequest(input: SignInput): SignedRequest {
   const { amzdate, datestamp } = amzDate(input.date);
   const host = new URL(input.origin).host;
+  // Sent once-encoded; signed encoded again (non-S3 SigV4 rule).
   const canonicalPath = canonicalizePath(input.rawPath);
+  const signedPath = canonicalizePath(canonicalPath);
 
   // Headers that go into the signature. Host + x-amz-date are mandatory; fold
   // in any caller headers (content-type) and the session token.
@@ -99,7 +106,7 @@ export function signRequest(input: SignInput): SignedRequest {
   const canonicalQuery = canonicalizeQuery(input.query);
   const canonicalRequest = [
     input.method.toUpperCase(),
-    canonicalPath,
+    signedPath,
     canonicalQuery,
     canonicalHeaders,
     signedHeaders,
@@ -128,5 +135,5 @@ export function signRequest(input: SignInput): SignedRequest {
   if (input.credentials.sessionToken) outHeaders['X-Amz-Security-Token'] = input.credentials.sessionToken;
 
   const qs = canonicalQuery ? `?${canonicalQuery}` : '';
-  return { url: `${input.origin}${canonicalPath}${qs}`, headers: outHeaders };
+  return { url: `${input.origin}${canonicalPath}${qs}`, headers: outHeaders, canonicalRequest };
 }
