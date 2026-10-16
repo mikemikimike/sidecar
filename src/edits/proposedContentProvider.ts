@@ -1,5 +1,18 @@
 import { TextDocumentContentProvider, Uri, EventEmitter, Event } from 'vscode';
 
+let previewSeq = 0;
+
+/**
+ * A key for one preview of `filePath`, unique to that preview (#156 ML-56).
+ * Keyed by path alone, two previews of one file shared one document: the
+ * second's content replaced the first's in the open diff tab, and disposing
+ * either deleted it for both. The path still ends in the file's own name, so
+ * the diff editor picks the language from the extension.
+ */
+export function previewKey(filePath: string): string {
+  return `/sidecar-preview-${++previewSeq}/${filePath.replace(/^\/+/, '')}`;
+}
+
 export class ProposedContentProvider implements TextDocumentContentProvider {
   private content = new Map<string, string>();
   private _onDidChange = new EventEmitter<Uri>();

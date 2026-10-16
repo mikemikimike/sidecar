@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { openDiffPreview } from './streamingDiffPreview.js';
 import { ProposedContentProvider } from './proposedContentProvider.js';
-import { workspace, window } from 'vscode';
+import { workspace, window, commands } from 'vscode';
 
 describe('openDiffPreview', () => {
   it('throws when no workspace folders', async () => {
@@ -27,7 +27,11 @@ describe('openDiffPreview', () => {
     expect(session.dispose).toBeDefined();
   });
 
+  /** The proposed-content URI a session opened its diff with. */
+  const openedUri = (spy: ReturnType<typeof vi.spyOn>) => (spy.mock.calls.at(-1) as unknown[])[2] as { path: string };
+
   it('update changes the proposed content', async () => {
+    const diff = vi.spyOn(commands, 'executeCommand');
     const provider = new ProposedContentProvider();
     const confirmFn = vi.fn().mockResolvedValue('Accept');
 
@@ -35,10 +39,31 @@ describe('openDiffPreview', () => {
     session.update('v2');
 
     // Verify the provider got updated content
-    const uri = { path: '/app.ts' } as never;
-    expect(provider.provideTextDocumentContent(uri)).toBe('v2');
+    expect(provider.provideTextDocumentContent(openedUri(diff) as never)).toBe('v2');
+    expect(openedUri(diff).path).toMatch(/\/app\.ts$/); // keeps the extension for language detection
 
     session.dispose();
+    diff.mockRestore();
+  });
+
+  // #156 ML-56: two cautious previews of one file shared one document.
+  it('two previews of the same file each keep their own content, and disposing one keeps the other', async () => {
+    const diff = vi.spyOn(commands, 'executeCommand');
+    const provider = new ProposedContentProvider();
+    const confirmFn = vi.fn().mockResolvedValue('Accept');
+
+    const a = await openDiffPreview('app.ts', 'edit A', provider, confirmFn);
+    const uriA = openedUri(diff);
+    const b = await openDiffPreview('app.ts', 'edit B', provider, confirmFn);
+    const uriB = openedUri(diff);
+
+    expect(uriA.path).not.toBe(uriB.path);
+    expect(provider.provideTextDocumentContent(uriA as never)).toBe('edit A');
+    expect(provider.provideTextDocumentContent(uriB as never)).toBe('edit B');
+    a.dispose();
+    expect(provider.provideTextDocumentContent(uriB as never)).toBe('edit B');
+    b.dispose();
+    diff.mockRestore();
   });
 
   it('finalize returns accept when user accepts via editor notification', async () => {
