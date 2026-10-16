@@ -182,7 +182,7 @@ describe('shell tool runtime resolution', () => {
       await runTests({ file: 'test_calc.py' }, makeContext(injected));
       // call 0 = the `pytest --version` probe, call 1 = the actual run
       expect(injected.execute.mock.calls[0][0]).toBe('python3 -m pytest --version');
-      expect(injected.execute.mock.calls[1][0]).toBe("python3 -m pytest 'test_calc.py'");
+      expect(injected.execute.mock.calls[1][0]).toBe('python3 -m pytest "test_calc.py"');
     });
 
     it('falls back to `python -m unittest` when pytest is NOT available', async () => {
@@ -195,7 +195,7 @@ describe('shell tool runtime resolution', () => {
           : { stdout: 'ok', exitCode: 0, timedOut: false },
       );
       await runTests({ file: 'test_calc.py' }, makeContext(injected));
-      expect(injected.execute.mock.calls[1][0]).toBe("python -m unittest 'test_calc.py'");
+      expect(injected.execute.mock.calls[1][0]).toBe('python -m unittest "test_calc.py"');
     });
 
     it('uses `unittest discover` (no file) when pytest is unavailable and no file is given', async () => {

@@ -66,10 +66,15 @@ export async function handleRestartOllama(state: ChatState): Promise<void> {
   state.postMessage({ command: 'setLoading', isLoading: true });
 
   try {
-    const { execSync } = await import('child_process');
-    // Kill any running Ollama process (best-effort — ignore failures)
+    const { execFileSync } = await import('child_process');
+    // Kill any running Ollama process (best-effort — ignore failures). There
+    // is no pkill on Windows (#117).
     try {
-      execSync('pkill -x ollama', { stdio: 'ignore' });
+      if (process.platform === 'win32') {
+        execFileSync('taskkill', ['/F', '/IM', 'ollama.exe'], { stdio: 'ignore' });
+      } else {
+        execFileSync('pkill', ['-x', 'ollama'], { stdio: 'ignore' });
+      }
     } catch {
       /* not running */
     }

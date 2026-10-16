@@ -522,13 +522,17 @@ export function isProtectedWritePath(filePath: string): string | null {
  * and opens a new quoted string. Safe even for paths containing
  * metacharacters like `$`, `` ` ``, `;`, `&`, `|`, space, newline.
  *
- * Used by `run_tests` to safely interpolate a model-supplied `file`
- * argument into a shell command. Note: on Windows, cmd.exe doesn't
- * interpret single quotes the same way. ShellSession uses bash on
- * non-Windows and cmd.exe on Windows; for the Windows case we additionally
- * reject metacharacters below instead of relying on quoting.
+ * Used by `run_tests`, `latex_compile` and `profile_code` to interpolate a
+ * model-supplied path into a shell command, after `hasShellMetachar` has
+ * rejected anything dangerous. What survives that check is double-quoted
+ * instead: ShellSession falls back to cmd.exe on Windows, which takes `'` as
+ * a literal character, so `pdflatex 'main.tex'` looked for a file named
+ * `'main.tex'` (#117). Double quotes group the same way in bash, cmd.exe and
+ * PowerShell for any value free of the characters each still expands inside
+ * them; a value holding one of those keeps the POSIX form.
  */
 export function shellQuote(value: string): string {
+  if (!/["$`\\%!\n\r]/.test(value)) return `"${value}"`;
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 

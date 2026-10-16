@@ -1,8 +1,40 @@
 import { workspace, Uri } from 'vscode';
-import { execFile } from 'child_process';
+import { execFile, type ExecFileOptions } from 'child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
+
+/** Package-manager launchers that are `.cmd` scripts on Windows. */
+const WINDOWS_CMD_SHIMS = /^(npm|npx|yarn|pnpm|bun|bunx)$/i;
+
+/** Quote one argument for a cmd.exe command line. */
+function quoteForCmd(arg: string): string {
+  return /^[\w.\-/:\\=@,+]+$/.test(arg) ? arg : `"${arg.replace(/"/g, '""')}"`;
+}
+
+/**
+ * execFile, except that on Windows a bare npm/npx/yarn/pnpm/bun runs through
+ * cmd.exe (#117). Those are `.cmd` scripts there, which execFile cannot start
+ * without a shell, so the auto-detected `npm run lint` / `npx eslint` failed on
+ * every Windows machine. Everything else -- and every other platform -- keeps
+ * execFile's no-shell behaviour. Commands reaching this come from SideCar's own
+ * detection or the user's configuration.
+ */
+export function execPortable(
+  bin: string,
+  args: string[],
+  options: ExecFileOptions,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ stdout: string; stderr: string }> {
+  if (platform === 'win32' && WINDOWS_CMD_SHIMS.test(bin)) {
+    const line = [bin, ...args].map(quoteForCmd).join(' ');
+    return execFileAsync('cmd.exe', ['/d', '/s', '/c', `"${line}"`], {
+      ...options,
+      windowsVerbatimArguments: true,
+    }) as Promise<{ stdout: string; stderr: string }>;
+  }
+  return execFileAsync(bin, args, options) as Promise<{ stdout: string; stderr: string }>;
+}
 
 /**
  * Split a shell-style command string into [bin, ...args] without invoking a
@@ -10,14 +42,19 @@ const execFileAsync = promisify(execFile);
  * Used so we can pass the result directly to execFile(), which avoids shell
  * metacharacter injection entirely.
  */
-export function parseArgv(cmd: string): [string, string[]] {
+export function parseArgv(cmd: string, platform: NodeJS.Platform = process.platform): [string, string[]] {
   const tokens: string[] = [];
   let current = '';
   let quote: '"' | "'" | null = null;
+  // A backslash escapes only a space, quote or backslash -- and on Windows
+  // never: it is the path separator there, and `C:\proj\src` came out as
+  // `C:projsrc` (#117).
+  const escapes = (next: string | undefined): boolean =>
+    platform !== 'win32' && next !== undefined && /[\s"'\\]/.test(next);
 
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
-    if (ch === '\\' && quote !== "'") {
+    if (ch === '\\' && quote !== "'" && escapes(cmd[i + 1])) {
       // Escaped character — consume next character literally.
       i++;
       if (i < cmd.length) current += cmd[i];
@@ -102,7 +139,7 @@ export async function runLint(command?: string): Promise<{ output: string; succe
 
   try {
     const [bin, args] = parseArgv(lintCmd);
-    const { stdout, stderr } = await execFileAsync(bin, args, {
+    const { stdout, stderr } = await execPortable(bin, args, {
       cwd,
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,

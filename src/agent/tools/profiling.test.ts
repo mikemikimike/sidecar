@@ -282,12 +282,12 @@ describe('profileCode — command routing', () => {
     expect(session.execute).not.toHaveBeenCalled();
   });
 
-  it('single-quotes the script path in the built command', async () => {
+  it('double-quotes the script path in the built command (#117: cmd.exe keeps single quotes)', async () => {
     const session = makeSession('ncalls  tottime\n     1    0.001    0.001    0.001    0.001 s.py:1(<module>)');
     const ctx = makeContext(true, 5, session);
     await profileCode({ ecosystem: 'python', script: 'src/app.py' }, ctx);
     const cmd = captureCmd(session);
-    expect(cmd).toContain("'src/app.py'");
-    expect(cmd).not.toContain('"src/app.py"');
+    expect(cmd).toContain('"src/app.py"');
+    expect(cmd).not.toContain("'src/app.py'");
   });
 });

@@ -60,11 +60,36 @@ function fmtBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-/** CPU load averages from os.loadavg() — available on all platforms. */
-function cpuSection(): string {
-  const [l1, l5, l15] = os.loadavg();
+/** Share of CPU time spent busy between two os.cpus() snapshots, 0–100. */
+export function cpuBusyPercent(before: os.CpuInfo[], after: os.CpuInfo[]): number {
+  let busy = 0;
+  let total = 0;
+  after.forEach((cpu, i) => {
+    const prev = before[i]?.times;
+    if (!prev) return;
+    const d = (k: keyof os.CpuInfo['times']) => cpu.times[k] - prev[k];
+    const all = d('user') + d('nice') + d('sys') + d('idle') + d('irq');
+    busy += all - d('idle');
+    total += all;
+  });
+  return total > 0 ? (busy / total) * 100 : 0;
+}
+
+/**
+ * CPU load averages from os.loadavg(). Windows has no load average --
+ * loadavg() is all zeros there, so this reported 0% on every call (#117) --
+ * so on Windows it samples CPU times over a short window instead.
+ */
+async function cpuSection(): Promise<string> {
   const cpus = os.cpus().length;
   const model = os.cpus()[0]?.model?.trim() ?? 'unknown';
+  if (os.platform() === 'win32') {
+    const before = os.cpus();
+    await new Promise((r) => setTimeout(r, 250));
+    const pct = cpuBusyPercent(before, os.cpus()).toFixed(0);
+    return [`CPU: ${model} (${cpus} logical cores)`, `  Utilisation: ${pct}% (sampled over 250 ms)`].join('\n');
+  }
+  const [l1, l5, l15] = os.loadavg();
   const pct1 = ((l1 / cpus) * 100).toFixed(0);
   return [
     `CPU: ${model} (${cpus} logical cores)`,
@@ -179,7 +204,7 @@ export async function systemMonitor(input: Record<string, unknown>): Promise<str
 
   const sections: string[] = [];
 
-  sections.push(cpuSection());
+  sections.push(await cpuSection());
   sections.push(ramSection());
 
   if (includeGpu) {
