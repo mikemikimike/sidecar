@@ -60,7 +60,13 @@ const MAX_RESULT_LENGTH = 2000;
  * Stored as JSONL in `.sidecar/logs/audit.jsonl` (gitignored).
  */
 export class AuditLog {
-  private pendingEntry: Partial<AuditEntry> | null = null;
+  /**
+   * Calls started and not yet finished, by toolCallId (a queue per id: Ollama
+   * reuses ids such as ollama_tc_0). One slot used to hold them all, so in a
+   * turn with several calls every result but the last was logged with
+   * `input: {}` (#116).
+   */
+  private pending = new Map<string, Partial<AuditEntry>[]>();
 
   constructor(
     private sidecarDir: SidecarDir,
@@ -78,7 +84,7 @@ export class AuditLog {
 
   /** Record the start of a tool call. */
   recordToolCall(tool: string, input: Record<string, unknown>, toolCallId: string, iteration: number): void {
-    this.pendingEntry = {
+    const started: Partial<AuditEntry> = {
       timestamp: new Date().toISOString(),
       sessionId: this.sessionId,
       tool,
@@ -88,6 +94,9 @@ export class AuditLog {
       approvalMode: this.approvalMode,
       model: this.model,
     };
+    const queue = this.pending.get(toolCallId) ?? [];
+    queue.push(started);
+    this.pending.set(toolCallId, queue);
   }
 
   /** Record the result of a tool call and flush to disk. */
@@ -100,14 +109,16 @@ export class AuditLog {
   ): Promise<void> {
     // Match against pending entry, or create a standalone entry
     let entry: AuditEntry;
-    if (this.pendingEntry && this.pendingEntry.toolCallId === toolCallId) {
+    const queue = this.pending.get(toolCallId);
+    const started = queue?.shift();
+    if (queue && queue.length === 0) this.pending.delete(toolCallId);
+    if (started) {
       entry = {
-        ...this.pendingEntry,
+        ...started,
         result: result.slice(0, MAX_RESULT_LENGTH),
         isError,
         durationMs,
       } as AuditEntry;
-      this.pendingEntry = null;
     } else {
       entry = {
         timestamp: new Date().toISOString(),

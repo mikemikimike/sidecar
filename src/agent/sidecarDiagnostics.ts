@@ -63,7 +63,8 @@ function lineRange(line: number, columnEnd = 1000): Range {
 export function reportSecurityIssues(filePath: string, issues: SecurityIssue[]): void {
   const uri = Uri.file(filePath);
   if (issues.length === 0) {
-    ensure().delete(uri);
+    securityByFile.delete(uri.toString());
+    publish(uri);
     return;
   }
   const diagnostics = issues.map((issue) => {
@@ -72,7 +73,8 @@ export function reportSecurityIssues(filePath: string, issues: SecurityIssue[]):
     diag.code = issue.category;
     return diag;
   });
-  ensure().set(uri, diagnostics);
+  securityByFile.set(uri.toString(), diagnostics);
+  publish(uri);
 }
 
 /**
@@ -86,7 +88,8 @@ export function reportSecurityIssues(filePath: string, issues: SecurityIssue[]):
 export function reportStubs(filePath: string, fileContent: string, stubs: StubMatch[]): void {
   const uri = Uri.file(filePath);
   if (stubs.length === 0) {
-    ensure().delete(uri);
+    stubsByFile.delete(uri.toString());
+    publish(uri);
     return;
   }
   const lines = fileContent.split('\n');
@@ -106,16 +109,36 @@ export function reportStubs(filePath: string, fileContent: string, stubs: StubMa
     diag.code = stub.category;
     return diag;
   });
-  ensure().set(uri, diagnostics);
+  stubsByFile.set(uri.toString(), diagnostics);
+  publish(uri);
 }
 
 /** Remove every diagnostic for a single file (secrets + stubs + vulns). */
 export function clearFile(filePath: string): void {
-  ensure().delete(Uri.file(filePath));
+  const uri = Uri.file(filePath);
+  securityByFile.delete(uri.toString());
+  stubsByFile.delete(uri.toString());
+  ensure().delete(uri);
+}
+
+// Security and stub diagnostics are reported separately but share one
+// collection, whose set() replaces a file's whole list: a stub scan after a
+// secret scan erased the secret warnings from the Problems panel (#116).
+// Each kind is kept here and the file's entry is always the union.
+const securityByFile = new Map<string, Diagnostic[]>();
+const stubsByFile = new Map<string, Diagnostic[]>();
+
+function publish(uri: Uri): void {
+  const key = uri.toString();
+  const all = [...(securityByFile.get(key) ?? []), ...(stubsByFile.get(key) ?? [])];
+  if (all.length === 0) ensure().delete(uri);
+  else ensure().set(uri, all);
 }
 
 /** Wipe every SideCar-authored diagnostic from the Problems panel. */
 export function clearAll(): void {
+  securityByFile.clear();
+  stubsByFile.clear();
   ensure().clear();
 }
 

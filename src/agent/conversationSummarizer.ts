@@ -301,12 +301,35 @@ export interface SummarizeOptions {
  * Pure and exported for unit testing — this is the deterministic core of "keep the
  * user's words so standing instructions survive compaction".
  */
+const SUMMARY_PREFIX = '[Earlier conversation summary';
+const VERBATIM_HEADER = '## User messages so far';
+
+/** The `- ` lines of a summary message's verbatim user-message block. */
+function keptVerbatimLines(summaryText: string): string[] {
+  const lines = summaryText.split('\n');
+  const start = lines.findIndex((l) => l.startsWith(VERBATIM_HEADER));
+  if (start === -1) return [];
+  const out: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.startsWith('- ')) break;
+    out.push(line);
+  }
+  return out;
+}
+
 export function extractUserMessagesVerbatim(oldTurns: ChatMessage[][], maxChars: number, perMessageCap = 500): string {
   const lines: string[] = [];
   for (const turn of oldTurns) {
     const first = turn[0];
     if (!first || first.role !== 'user') continue;
     const text = getContentText(first.content).trim();
+    // An earlier compaction's summary: carry its verbatim block forward. It
+    // starts with '[' like any synthetic message, so a second compaction used
+    // to skip it and the user's kept words were lost (#116).
+    if (text.startsWith(SUMMARY_PREFIX)) {
+      lines.push(...keptVerbatimLines(text));
+      continue;
+    }
     if (text === '' || text.startsWith('[')) continue; // tool-result / synthetic
     const oneLine = text.replace(/\s+/g, ' ');
     const capped = oneLine.length > perMessageCap ? oneLine.slice(0, perMessageCap) + '…' : oneLine;
@@ -381,7 +404,9 @@ export class ConversationSummarizer {
     }
 
     // Identify which turns to summarize (all but the last N)
-    const recentTurns = turns.slice(-keepRecentTurns);
+    // slice(-0) is the whole array: keepRecentTurns 0 kept every turn AND
+    // summarized every turn (#116).
+    const recentTurns = keepRecentTurns > 0 ? turns.slice(-keepRecentTurns) : [];
     const oldTurns = turns.slice(0, turns.length - keepRecentTurns);
 
     // Estimate chars we'd save
@@ -456,7 +481,11 @@ export class ConversationSummarizer {
         newMessages.push(...turn);
       }
 
-      const freedChars = oldTurnsChars - summary.length;
+      // What the old turns are replaced with is the whole summary message
+      // (header and verbatim block included) plus the acknowledgement, not
+      // just the summary text (#116).
+      const replacementChars = getContentLength(newMessages[0].content) + getContentLength(newMessages[1].content);
+      const freedChars = oldTurnsChars - replacementChars;
       return {
         messages: newMessages,
         freedChars: Math.max(0, freedChars),
@@ -631,6 +660,7 @@ ${facts.join('\n')}
 
 ${standing.length > 0 ? 'Latched standing instructions (verbatim):\n' + standing.map((l) => `- ${l}`).join('\n') + '\n\n' : ''}${codeChanges.length > 0 ? 'Code changes (verbatim):\n' + codeChanges.join('\n') + '\n\n' : ''}${errors.length > 0 ? 'Errors hit (verbatim):\n' + errors.join('\n') + '\n\n' : ''}Structured summary:`;
 
+    let modelBefore: string | undefined;
     try {
       const summarizeMessages: ChatMessage[] = [{ role: 'user', content: prompt }];
 
@@ -638,7 +668,10 @@ ${standing.length > 0 ? 'Latched standing instructions (verbatim):\n' + standing
       // as the `summarize` role so `sidecar.modelRouting.rules` can
       // point summarization at a cheap model (typical: Haiku) while
       // leaving the main agent loop on a bigger reasoning-capable one.
-      // No-op when no router is attached.
+      // No-op when no router is attached. The model it picks is put back
+      // afterwards (#116): routeForDispatch sets client.model, and left
+      // alone the agent's next turn ran on the summarizer's cheap model.
+      modelBefore = this.client.getModel();
       this.client.routeForDispatch({ role: 'summarize' });
 
       const summaryPromise = new Promise<string>((resolve, reject) => {
@@ -686,6 +719,8 @@ ${standing.length > 0 ? 'Latched standing instructions (verbatim):\n' + standing
         standing,
         standingDirect,
       };
+    } finally {
+      if (modelBefore !== undefined && this.client.getModel() !== modelBefore) this.client.updateModel(modelBefore);
     }
   }
 }

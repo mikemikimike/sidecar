@@ -12,9 +12,14 @@ export type ThinkingMode = 'single' | 'self-debate' | 'tree-of-thought' | 'red-t
  * includes a frontmatter header with the mode selection.
  */
 export class ThinkingStore {
-  // In-memory ring buffer: Map<taskId, string[]> with max 50 entries per task
+  // In-memory ring buffer: Map<taskId, string[]> with max 50 entries per task,
+  // for the MAX_TASKS most recent tasks (one store serves every run, and
+  // nothing else clears it).
   private buffer = new Map<string, string[]>();
   private readonly MAX_ENTRIES = 50;
+  private readonly MAX_TASKS = 20;
+  /** Per-task write queue: appends run in order, never concurrently. */
+  private writes = new Map<string, Promise<void>>();
   private thinkingDir: string | undefined;
 
   constructor() {
@@ -36,6 +41,11 @@ export class ThinkingStore {
     // Maintain in-memory ring buffer
     if (!this.buffer.has(taskId)) {
       this.buffer.set(taskId, []);
+      while (this.buffer.size > this.MAX_TASKS) {
+        const oldest = this.buffer.keys().next().value as string;
+        this.buffer.delete(oldest);
+        this.writes.delete(oldest);
+      }
     }
 
     const entries = this.buffer.get(taskId)!;
@@ -47,44 +57,36 @@ export class ThinkingStore {
     const entry = `[${timestamp}]\n${content}`;
     entries.push(entry);
 
-    // Fire-and-forget write to disk
+    // Append just this entry, after the task's earlier appends.
     if (this.thinkingDir) {
-      this.writeToDisk(taskId, mode).catch(() => {
-        // Silently ignore write errors
-      });
+      const queued = (this.writes.get(taskId) ?? Promise.resolve())
+        .then(() => this.appendToDisk(taskId, entry, mode))
+        .catch(() => {
+          // Silently ignore write errors
+        });
+      this.writes.set(taskId, queued);
+      await queued;
     }
   }
 
   /**
-   * Write the current buffer for a task to disk.
-   * On first write, includes frontmatter with the mode.
-   * Subsequent writes append new entries.
+   * Append one entry to the task's file, writing the frontmatter first when
+   * the file does not exist yet (#116). This used to read the file and write
+   * back the WHOLE buffer on every append -- and append runs per streamed
+   * thinking delta -- so the file repeated itself and grew quadratically, and
+   * the fire-and-forget writes raced each other.
    */
-  private async writeToDisk(taskId: string, mode: ThinkingMode): Promise<void> {
+  private async appendToDisk(taskId: string, entry: string, mode: ThinkingMode): Promise<void> {
     if (!this.thinkingDir) return;
-
     const thinkingPath = path.join(this.thinkingDir, `${taskId}.md`);
-
-    // Ensure directory exists
     await fs.promises.mkdir(this.thinkingDir, { recursive: true });
-
-    const entries = this.buffer.get(taskId) || [];
-
-    // Check if file already exists
-    let content = '';
+    let head = '';
     try {
-      content = await fs.promises.readFile(thinkingPath, 'utf-8');
+      await fs.promises.access(thinkingPath);
     } catch {
-      // File doesn't exist yet, write with frontmatter
-      content = `---\nmode: ${mode}\ntaskId: ${taskId}\ncreatedAt: ${new Date().toISOString()}\n---\n\n`;
+      head = `---\nmode: ${mode}\ntaskId: ${taskId}\ncreatedAt: ${new Date().toISOString()}\n---\n\n`;
     }
-
-    // Append all buffered entries
-    if (entries.length > 0) {
-      content += entries.join('\n\n') + '\n';
-    }
-
-    await fs.promises.writeFile(thinkingPath, content, 'utf-8');
+    await fs.promises.appendFile(thinkingPath, `${head}${entry}\n\n`, 'utf-8');
   }
 
   /**

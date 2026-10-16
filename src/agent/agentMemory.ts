@@ -158,8 +158,10 @@ export class AgentMemory {
       let lowestScore = Infinity;
 
       for (const [id, entry] of this.memories) {
-        // Low use count + old age = lowest score = eviction candidate
-        const score = entry.useCount + (Date.now() - entry.timestamp) / (1000 * 60 * 60);
+        // Low use count + old age = lowest score = eviction candidate. Age is
+        // SUBTRACTED (#116): adding it gave old entries the highest scores,
+        // so the memory evicted was always the one just added.
+        const score = entry.useCount - (Date.now() - entry.timestamp) / (1000 * 60 * 60);
         if (score < lowestScore) {
           lowestScore = score;
           oldestId = id;
