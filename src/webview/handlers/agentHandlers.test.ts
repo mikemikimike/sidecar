@@ -621,12 +621,20 @@ describe('handleExplainToolDecision (integration)', () => {
 // the spy between the factory (which runs at module-load) and the test
 // assertions (which run later). Without this, the factory closes over an
 // undefined variable.
-const { mockHandleUserMessage } = vi.hoisted(() => ({ mockHandleUserMessage: vi.fn() }));
+const { mockHandleUserMessage, mockBuildSystemPrompt } = vi.hoisted(() => ({
+  mockHandleUserMessage: vi.fn(),
+  mockBuildSystemPrompt: vi.fn(async () => ({
+    systemPrompt: 'CHAT SYSTEM PROMPT',
+    contextLength: null,
+    matchedSkill: null,
+  })),
+}));
 vi.mock('./chatHandlers.js', async () => {
   const actual = await vi.importActual<typeof import('./chatHandlers.js')>('./chatHandlers.js');
   return {
     ...actual,
     handleUserMessage: (state: unknown, text: string, options?: unknown) => mockHandleUserMessage(state, text, options),
+    buildSystemPromptForRun: (...args: unknown[]) => mockBuildSystemPrompt(...(args as [])),
   };
 });
 
@@ -768,7 +776,7 @@ describe('handleBatch', () => {
     vi.mocked(parseBatchInput).mockReturnValueOnce({ mode: 'sequential', tasks: [] });
     const mod = await import('./agentHandlers.js');
     const state = {
-      client: { updateConnection: vi.fn(), updateModel: vi.fn() },
+      client: { updateConnection: vi.fn(), updateModel: vi.fn(), updateSystemPrompt: vi.fn() },
       postMessage: vi.fn(),
     };
     await mod.handleBatch(state as never, 'no tasks');
@@ -792,7 +800,7 @@ describe('handleBatch', () => {
     }) as never);
     const mod = await import('./agentHandlers.js');
     const state = {
-      client: { updateConnection: vi.fn(), updateModel: vi.fn() },
+      client: { updateConnection: vi.fn(), updateModel: vi.fn(), updateSystemPrompt: vi.fn() },
       postMessage: vi.fn(),
       agentLogger: {},
       mcpManager: {},
@@ -817,7 +825,7 @@ describe('handleBatch', () => {
     const pendingEdits = {};
     const changelog = {};
     const state = {
-      client: { updateConnection: vi.fn(), updateModel: vi.fn() },
+      client: { updateConnection: vi.fn(), updateModel: vi.fn(), updateSystemPrompt: vi.fn() },
       postMessage: vi.fn(),
       requestConfirm: vi.fn().mockResolvedValue('Allow'),
       requestClarification: vi.fn(),
@@ -833,6 +841,30 @@ describe('handleBatch', () => {
     expect(state.requestConfirm).toHaveBeenCalled();
   });
 
+  // #120: /batch set no system prompt, so it ran under whatever the last
+  // command (/init, /doc, ...) left on the shared client.
+  it("runs the batch under the chat system prompt, not the last command's", async () => {
+    const { parseBatchInput, runBatch } = await import('../../agent/batch.js');
+    vi.mocked(parseBatchInput).mockReturnValueOnce({ mode: 'sequential', tasks: ['fix a', 'fix b'] } as never);
+    let promptAtRun = '';
+    const client = {
+      updateConnection: vi.fn(),
+      updateModel: vi.fn(),
+      prompt: 'INIT SYSTEM PROMPT',
+      updateSystemPrompt(p: string) {
+        this.prompt = p;
+      },
+    };
+    vi.mocked(runBatch).mockImplementationOnce((async () => {
+      promptAtRun = client.prompt;
+      return [];
+    }) as never);
+    const mod = await import('./agentHandlers.js');
+    await mod.handleBatch({ client, postMessage: vi.fn() } as never, 'fix a\nfix b');
+    expect(promptAtRun).toBe('CHAT SYSTEM PROMPT');
+    expect((mockBuildSystemPrompt.mock.calls.at(-1) as unknown[])[2]).toBe('fix a\nfix b');
+  });
+
   it('reports a batch interruption as AbortError without surfacing a generic failure', async () => {
     const { parseBatchInput, runBatch } = await import('../../agent/batch.js');
     vi.mocked(parseBatchInput).mockReturnValueOnce({
@@ -843,7 +875,7 @@ describe('handleBatch', () => {
     vi.mocked(runBatch).mockRejectedValueOnce(abort);
     const mod = await import('./agentHandlers.js');
     const state = {
-      client: { updateConnection: vi.fn(), updateModel: vi.fn() },
+      client: { updateConnection: vi.fn(), updateModel: vi.fn(), updateSystemPrompt: vi.fn() },
       postMessage: vi.fn(),
     };
     await mod.handleBatch(state as never, 'anything');

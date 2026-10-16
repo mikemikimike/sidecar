@@ -10,7 +10,7 @@ import {
   ThemeIcon,
   commands,
 } from 'vscode';
-import { SessionManager, type SavedSession } from '../agent/sessions.js';
+import { SessionManager, onDidChangeSessions, type SavedSession } from '../agent/sessions.js';
 
 const VIEW_ID = 'sidecar.sessions';
 
@@ -64,10 +64,12 @@ class SessionsTreeProvider implements TreeDataProvider<SessionItem> {
     const all = this.manager.list();
 
     if (!element) {
-      // Root: sessions without a parentId, sorted newest first.
+      // Root: sessions without a parent -- including branches whose parent
+      // was deleted, which had nowhere to appear (#120) -- newest first.
+      const ids = new Set(all.map((s) => s.id));
       const childIds = new Set(all.filter((s) => s.parentId).map((s) => s.parentId!));
       return all
-        .filter((s) => !s.parentId)
+        .filter((s) => !s.parentId || !ids.has(s.parentId))
         .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt))
         .map((s) => new SessionItem(s, childIds.has(s.id)));
     }
@@ -157,7 +159,11 @@ export function registerSessionsView(
     provider.refresh();
   });
 
-  context.subscriptions.push(treeView, provider, loadCmd, deleteCmd, renameCmd, saveCmd, branchCmd);
+  const unsubscribe = onDidChangeSessions(() => provider.refresh());
+
+  context.subscriptions.push(treeView, provider, loadCmd, deleteCmd, renameCmd, saveCmd, branchCmd, {
+    dispose: unsubscribe,
+  });
 
   return treeView;
 }

@@ -190,7 +190,7 @@ export function resolveContextBudget(p: {
   return { contextLength, maxSystemChars };
 }
 
-async function buildSystemPromptForRun(
+export async function buildSystemPromptForRun(
   state: ChatState,
   config: ReturnType<typeof getConfig>,
   text: string,

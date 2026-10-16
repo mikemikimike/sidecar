@@ -83,6 +83,8 @@ function constantTimeEquals(a: string, b: string): boolean {
 export class McpAgentServer {
   private httpServer: http.Server | null = null;
   private activeTaskCount = 0;
+  /** One per running task; stop() aborts them all. */
+  private readonly taskControllers = new Set<AbortController>();
   private readonly options: McpAgentServerOptions;
 
   constructor(options: McpAgentServerOptions) {
@@ -94,7 +96,7 @@ export class McpAgentServer {
    * Called once per HTTP request so every client session gets its own
    * transport instance — required by the stateless StreamableHTTP spec.
    */
-  private buildMcpServer(): Server {
+  private buildMcpServer(requestSignal: AbortSignal): Server {
     const mcpServer = new Server({ name: 'sidecar-agent', version: '0.95.0' }, { capabilities: { tools: {} } });
 
     mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -157,7 +159,7 @@ export class McpAgentServer {
 
       this.activeTaskCount++;
       try {
-        const result = await this.runTask(task.trim(), maxIterations, approvalMode);
+        const result = await this.runTask(task.trim(), maxIterations, approvalMode, requestSignal);
         return { content: [{ type: 'text', text: result }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -234,7 +236,13 @@ export class McpAgentServer {
         // reusing a single instance across requests causes 500s on the second POST
         // (notifications/initialized) because the transport's state is consumed.
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-        const mcpServer = this.buildMcpServer();
+        // A client that hangs up stops its task: before, the agent ran to
+        // completion -- tools and all -- for a caller that was gone (#120).
+        const requestAbort = new AbortController();
+        res.on('close', () => {
+          if (!res.writableEnded) requestAbort.abort();
+        });
+        const mcpServer = this.buildMcpServer(requestAbort.signal);
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res, body);
       });
@@ -250,6 +258,9 @@ export class McpAgentServer {
 
   async stop(): Promise<void> {
     if (!this.httpServer) return;
+    // close() waits for open connections, and a running task holds one open
+    // until it finishes -- so stop() hung for the length of the task (#120).
+    for (const controller of this.taskControllers) controller.abort();
     await new Promise<void>((resolve, reject) => this.httpServer!.close((err) => (err ? reject(err) : resolve())));
     this.httpServer = null;
   }
@@ -268,11 +279,38 @@ export class McpAgentServer {
     task: string,
     maxIterationsInput: number | undefined,
     approvalModeInput: string | undefined,
+    requestSignal?: AbortSignal,
   ): Promise<string> {
     const controller = new AbortController();
+    if (requestSignal?.aborted) controller.abort();
+    requestSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+    this.taskControllers.add(controller);
+    try {
+      return await this.runTaskWith(controller, task, maxIterationsInput, approvalModeInput);
+    } finally {
+      this.taskControllers.delete(controller);
+    }
+  }
+
+  /**
+   * The loop's iteration cap from the caller's value. A non-numeric value
+   * made the clamp NaN, and the loop ran zero iterations (#120).
+   */
+  static clampMaxIterations(input: unknown): number {
+    const n = typeof input === 'string' && input.trim() ? Number(input) : input;
+    if (typeof n !== 'number' || !Number.isFinite(n)) return 20;
+    return Math.min(Math.max(1, Math.floor(n)), 40);
+  }
+
+  private async runTaskWith(
+    controller: AbortController,
+    task: string,
+    maxIterationsInput: number | undefined,
+    approvalModeInput: string | undefined,
+  ): Promise<string> {
     const textParts: string[] = [];
 
-    const clampedMaxIterations = Math.min(Math.max(1, maxIterationsInput ?? 20), 40);
+    const clampedMaxIterations = McpAgentServer.clampMaxIterations(maxIterationsInput);
     // Map the MCP-facing approval names to real ApprovalMode values. The schema
     // exposes 'auto'/'suggest'/'manual', but the loop expects
     // 'autonomous'/'cautious'/'manual'/'plan'/'review'. Casting the raw input

@@ -7,16 +7,51 @@
  *      VS Code notifications if the machine is running dangerously low.
  *   3. Status bar: getSystemMemory() supplies the RAM%/VRAM% readout.
  *
- * RAM reads use os.freemem() — always available, zero cost.
+ * RAM reads use os.freemem(), or `vm_stat` on macOS (see availableMemoryBytes).
  * VRAM reads spawn nvidia-smi / rocm-smi — only on demand (status bar refresh).
  */
 
 import * as os from 'os';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { window, commands, type Disposable } from 'vscode';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/**
+ * Bytes available to a new allocation, from `vm_stat` output: free (less
+ * speculative) plus inactive pages -- psutil's definition. Null when the
+ * output can't be read.
+ */
+export function parseVmStatAvailable(text: string): number | null {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
+  const pages = (label: string) => Number(new RegExp(`^Pages ${label}:\\s+(\\d+)`, 'm').exec(text)?.[1] ?? NaN);
+  const free = pages('free');
+  const inactive = pages('inactive');
+  const speculative = pages('speculative');
+  if (!pageSize || !Number.isFinite(free) || !Number.isFinite(inactive)) return null;
+  return (free - (Number.isFinite(speculative) ? speculative : 0) + inactive) * pageSize;
+}
+
+/**
+ * RAM available to a new allocation. os.freemem() is that on Linux
+ * (MemAvailable) and Windows, but on macOS it counts only free pages -- a
+ * normal Mac keeps most reclaimable memory "inactive", so the preflight
+ * blocked model loads as "critical" on machines with plenty of room (#120).
+ */
+export async function availableMemoryBytes(platform: NodeJS.Platform = process.platform): Promise<number> {
+  if (platform === 'darwin') {
+    try {
+      const { stdout } = await execFileAsync('vm_stat', [], { timeout: 2000 });
+      const available = parseVmStatAvailable(stdout);
+      if (available !== null) return available;
+    } catch {
+      // fall through
+    }
+  }
+  return os.freemem();
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -126,7 +161,7 @@ async function rocmSmiMemory(): Promise<VramInfo[]> {
  */
 export async function getSystemMemory(): Promise<SystemMemory> {
   const totalBytes = os.totalmem();
-  const freeBytes = os.freemem();
+  const freeBytes = await availableMemoryBytes();
   const usedBytes = totalBytes - freeBytes;
   const gib = 1024 ** 3;
 
@@ -181,7 +216,7 @@ export async function checkMemoryPreflight(label: string): Promise<boolean> {
   try {
     // RAM read is instant; skip the GPU probe for speed.
     const totalBytes = os.totalmem();
-    const freeBytes = os.freemem();
+    const freeBytes = await availableMemoryBytes();
     const gib = 1024 ** 3;
     mem = {
       ram: {
@@ -233,7 +268,7 @@ export async function checkMemoryPreflight(label: string): Promise<boolean> {
  * under significant memory pressure. Intended to run for the lifetime of
  * the extension so the user is warned even when the agent is idle.
  *
- * Uses only os.freemem() — no shell processes, zero overhead.
+ * Reads availableMemoryBytes(): os.freemem(), or one `vm_stat` on macOS.
  */
 export class MemoryPressureMonitor implements Disposable {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -259,7 +294,7 @@ export class MemoryPressureMonitor implements Disposable {
 
   private async poll(): Promise<void> {
     const totalBytes = os.totalmem();
-    const freeBytes = os.freemem();
+    const freeBytes = await availableMemoryBytes();
     const freeGib = freeBytes / 1024 ** 3;
 
     const pressure: MemoryPressure = freeGib < RAM_CRITICAL_GIB ? 'critical' : freeGib < RAM_LOW_GIB ? 'low' : 'ok';

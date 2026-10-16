@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const GiB = 1024 ** 3;
 let mockTotal = 16 * GiB;
 let mockFree = 8 * GiB;
+let mockVmStat: string | null = null;
 
 vi.mock('os', async () => {
   const actual = await vi.importActual<typeof import('os')>('os');
@@ -30,6 +31,12 @@ vi.mock('child_process', () => ({
       cb(new Error('not found'), { stdout: '', stderr: '' });
     },
   ),
+  execFile: vi.fn(
+    (_bin: string, _args: string[], _opts: unknown, cb: (err: Error | null, r: { stdout: string }) => void) => {
+      if (mockVmStat === null) cb(new Error('not found'), { stdout: '' });
+      else cb(null, { stdout: mockVmStat });
+    },
+  ),
 }));
 
 import {
@@ -38,6 +45,8 @@ import {
   checkMemoryPreflight,
   MemoryPressureMonitor,
   resetPreflightCooldownForTests,
+  parseVmStatAvailable,
+  availableMemoryBytes,
 } from './memoryMonitor.js';
 import { window } from 'vscode';
 
@@ -187,5 +196,38 @@ describe('MemoryPressureMonitor', () => {
     monitor.dispose();
     await vi.advanceTimersByTimeAsync(120_000);
     expect(window.showWarningMessage).not.toHaveBeenCalled();
+  });
+});
+
+// #120: on macOS os.freemem() counts only free pages; most reclaimable memory
+// sits in "inactive", so ordinary Macs were blocked as "critical".
+describe('available memory on macOS', () => {
+  // Real `vm_stat` shape (Apple silicon, 16 KiB pages).
+  const VM_STAT = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                               10000.',
+    'Pages active:                            400000.',
+    'Pages inactive:                          300000.',
+    'Pages speculative:                         2000.',
+    'Pages throttled:                              0.',
+    'Pages wired down:                        150000.',
+  ].join('\n');
+
+  afterEach(() => {
+    mockVmStat = null;
+  });
+
+  it('counts free (less speculative) plus inactive pages', () => {
+    expect(parseVmStatAvailable(VM_STAT)).toBe((10000 - 2000 + 300000) * 16384);
+    expect(parseVmStatAvailable('garbage')).toBeNull();
+  });
+
+  it('uses vm_stat on macOS and os.freemem() elsewhere or on failure', async () => {
+    stubOsMemory(32, 0.15);
+    mockVmStat = VM_STAT;
+    expect(await availableMemoryBytes('darwin')).toBe(308000 * 16384);
+    expect(await availableMemoryBytes('linux')).toBe(0.15 * GiB);
+    mockVmStat = null;
+    expect(await availableMemoryBytes('darwin')).toBe(0.15 * GiB);
   });
 });
