@@ -5,6 +5,7 @@ import { recordDecision } from '../decisions.js';
 import type { AgentCallbacks } from '../loop.js';
 import type { LoopState } from './state.js';
 import { normalizePath } from '../completionGate/pathUtil.js';
+import { readTextFile, writeTextFile } from '../tools/textFileIo.js';
 import {
   decideRatchet,
   captureFileSnapshot,
@@ -137,14 +138,13 @@ export function makeWorkspaceRatchetIo(rootDir: string | undefined): SnapshotIo 
   return {
     async read(p: string): Promise<string | null> {
       try {
-        const bytes = await workspace.fs.readFile(uriFor(p));
-        return Buffer.from(bytes).toString('utf-8');
+        return await readTextFile(uriFor(p));
       } catch {
         return null;
       }
     },
     async write(p: string, content: string): Promise<void> {
-      await workspace.fs.writeFile(uriFor(p), Buffer.from(content, 'utf-8'));
+      await writeTextFile(uriFor(p), content);
     },
     async remove(p: string): Promise<void> {
       try {

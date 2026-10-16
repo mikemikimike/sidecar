@@ -2,6 +2,7 @@ import { window, workspace, commands, Uri } from 'vscode';
 import * as path from 'path';
 import { getDefaultAuditBuffer, AuditFlushError, type AuditBuffer, type BufferedChange } from './auditBuffer.js';
 import { realPathRefusal } from '../tools/shared.js';
+import { readTextFile, writeTextFile } from '../tools/textFileIo.js';
 import { computeUnifiedDiff, computeHunks, applySelectedHunks, type DiffHunk } from '../diff.js';
 import { getAuditDecorationProvider } from '../../testing/auditDecorations.js';
 
@@ -393,8 +394,7 @@ function makeDiskHandlers(rootUri: Uri): {
     readDisk: async (relPath) => {
       const fileUri = Uri.joinPath(rootUri, relPath);
       try {
-        const bytes = await workspace.fs.readFile(fileUri);
-        return Buffer.from(bytes).toString('utf-8');
+        return await readTextFile(fileUri);
       } catch {
         // FileNotFound / EACCES / etc. — treat as absent for the
         // purposes of conflict detection. A subsequent write/delete
@@ -410,7 +410,7 @@ function makeDiskHandlers(rootUri: Uri): {
       if (dir && dir !== '.') {
         await workspace.fs.createDirectory(Uri.joinPath(rootUri, dir));
       }
-      await workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf-8'));
+      await writeTextFile(fileUri, content);
     },
     deleteDisk: async (relPath) => {
       const refusal = realPathRefusal(rootUri.fsPath, relPath, 'write');

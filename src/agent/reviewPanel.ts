@@ -14,6 +14,7 @@ import {
 } from 'vscode';
 import * as path from 'path';
 import type { PendingEditStore, PendingEdit } from './pendingEdits.js';
+import { writeTextFile } from './tools/textFileIo.js';
 import type { ProposedContentProvider } from '../edits/proposedContentProvider.js';
 
 /**
@@ -115,7 +116,7 @@ export async function applyPendingEdit(edit: PendingEdit): Promise<void> {
   if (dir && dir !== '/' && dir !== '.') {
     await workspace.fs.createDirectory(Uri.file(dir));
   }
-  await workspace.fs.writeFile(fileUri, Buffer.from(edit.newContent, 'utf-8'));
+  await writeTextFile(fileUri, edit.newContent);
 }
 
 /**

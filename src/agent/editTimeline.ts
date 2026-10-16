@@ -1,6 +1,7 @@
 import { workspace, Uri } from 'vscode';
 import * as path from 'path';
 import { getRootUri } from './tools/shared.js';
+import { writeTextFile } from './tools/textFileIo.js';
 
 export interface TimelineEntry {
   /** Workspace-relative path (forward slashes). */
@@ -78,7 +79,7 @@ export class EditTimelineStore {
     if (entry.originalContent === undefined) {
       await workspace.fs.delete(fileUri, { useTrash: true });
     } else {
-      await workspace.fs.writeFile(fileUri, Buffer.from(entry.originalContent, 'utf-8'));
+      await writeTextFile(fileUri, entry.originalContent);
     }
     this.entries.delete(norm);
     this.notify();
