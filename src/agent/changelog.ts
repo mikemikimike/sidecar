@@ -1,4 +1,5 @@
 import { workspace, Uri } from 'vscode';
+import { readTextFile, writeTextFile } from './tools/textFileIo.js';
 
 export interface FileChange {
   filePath: string;
@@ -19,8 +20,7 @@ export class ChangeLog {
     const fileUri = Uri.joinPath(rootUri, filePath);
     let originalContent: string | null = null;
     try {
-      const bytes = await workspace.fs.readFile(fileUri);
-      originalContent = Buffer.from(bytes).toString('utf-8');
+      originalContent = await readTextFile(fileUri);
     } catch {
       // File doesn't exist yet — will be a new creation
       originalContent = null;
@@ -59,7 +59,7 @@ export class ChangeLog {
           deleted++;
         } else {
           // File existed before — restore original content
-          await workspace.fs.writeFile(fileUri, Buffer.from(change.originalContent, 'utf-8'));
+          await writeTextFile(fileUri, change.originalContent);
           restored++;
         }
       } catch {
@@ -83,7 +83,7 @@ export class ChangeLog {
       if (change.originalContent === null) {
         await workspace.fs.delete(fileUri);
       } else {
-        await workspace.fs.writeFile(fileUri, Buffer.from(change.originalContent, 'utf-8'));
+        await writeTextFile(fileUri, change.originalContent);
       }
       this.changes = this.changes.filter((c) => c.filePath !== filePath);
       return true;
@@ -102,8 +102,7 @@ export class ChangeLog {
       let current: string | null = null;
       try {
         const fileUri = Uri.joinPath(rootUri, change.filePath);
-        const bytes = await workspace.fs.readFile(fileUri);
-        current = Buffer.from(bytes).toString('utf-8');
+        current = await readTextFile(fileUri);
       } catch {
         // File was deleted after being tracked
         current = null;
