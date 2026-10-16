@@ -81,3 +81,13 @@ describe('buildCapabilityProfile — tier', () => {
     expect(p).toMatchObject({ family: 'qwen', paramsB: 30, contextWindow: 32768, supportsTools: true });
   });
 });
+
+// #112: gpt-oss matched the hosted GPT family and got the frontier tier
+// before any baseline or eval was consulted.
+describe('gpt-oss is not the hosted GPT family', () => {
+  it('is not classified as gpt, and is not tiered strong by family', () => {
+    expect(detectModelFamily('gpt-oss:20b')).not.toBe('gpt');
+    expect(buildCapabilityProfile('gpt-oss:20b').tier).not.toBe('strong');
+    expect(detectModelFamily('gpt-4o')).toBe('gpt');
+  });
+});
