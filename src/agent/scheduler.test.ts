@@ -1,3 +1,9 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { workspace } from 'vscode';
+import { checkDocumentGate } from './documentGate.js';
+import { runAgentLoopInSandbox } from './shadow/sandbox.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Scheduler } from './scheduler.js';
 import type { ScheduledTask } from '../config/settings.js';
@@ -429,5 +435,39 @@ describe('Scheduler', () => {
     it('returns empty array when no tasks loaded', () => {
       expect(scheduler.getTaskNames()).toEqual([]);
     });
+  });
+});
+
+// #115: a scheduled task on files with unsaved edits runs in a shadow whose
+// patch was thrown away, and the run was recorded as a success.
+describe('Scheduler — shadow run on dirty files (#115)', () => {
+  it('saves the unapplied patch and records the run as not applied', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-115-sched-'));
+    const folders = workspace.workspaceFolders;
+    (workspace as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: root } }];
+    vi.mocked(checkDocumentGate).mockReturnValueOnce({ dirty: true, dirtyFiles: ['src/a.ts'] });
+    vi.mocked(runAgentLoopInSandbox).mockResolvedValueOnce({
+      mode: 'shadow',
+      applied: false,
+      reason: 'deferred',
+      pendingDiff: 'diff --git a/src/a.ts b/src/a.ts\n',
+    } as never);
+    const scheduler = new Scheduler();
+    try {
+      scheduler.start([
+        { name: 'nightly fix', enabled: true, prompt: 'p', intervalMinutes: 60, targetPaths: ['src/a.ts'] },
+      ]);
+      await scheduler.runNow('nightly fix');
+      const record = scheduler.getRunHistory().at(-1)!;
+      expect(record.success).toBe(false);
+      expect(record.errorMessage).toMatch(/not applied: src\/a\.ts had uncommitted changes[\s\S]*git apply/);
+      const dir = path.join(root, '.sidecar', 'scheduled-patches');
+      const files = fs.readdirSync(dir);
+      expect(files).toHaveLength(1);
+      expect(fs.readFileSync(path.join(dir, files[0]), 'utf-8')).toContain('diff --git a/src/a.ts');
+    } finally {
+      scheduler.dispose();
+      (workspace as { workspaceFolders: unknown }).workspaceFolders = folders;
+    }
   });
 });

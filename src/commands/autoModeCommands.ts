@@ -47,8 +47,13 @@ export function registerAutoModeCommands(context: ExtensionContext, deps: AutoMo
         ? path.join(workspaceRoot, cfg.autoModeBacklogPath)
         : cfg.autoModeBacklogPath;
 
-      autoModeAbortController = new AbortController();
-      const signal = autoModeAbortController.signal;
+      // This run's own controller. A stopped run can still be finishing when
+      // a new one starts, and its onSessionEnd cleared the NEW run's
+      // controller -- Stop then did nothing (#115). Only the run that owns the
+      // controller clears it.
+      const controller = new AbortController();
+      autoModeAbortController = controller;
+      const signal = controller.signal;
 
       void runAutoMode(
         createClient(),
@@ -97,8 +102,10 @@ export function registerAutoModeCommands(context: ExtensionContext, deps: AutoMo
             }
           },
           onSessionEnd: (result) => {
-            autoModeAbortController = null;
-            autoModeStatusBar.hide();
+            if (autoModeAbortController === controller) {
+              autoModeAbortController = null;
+              autoModeStatusBar.hide();
+            }
             getChatProvider()?.notify({
               command: 'autoModeDone',
               autoModeResult: {

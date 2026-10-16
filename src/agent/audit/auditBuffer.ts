@@ -172,14 +172,18 @@ export class AuditBuffer {
     const isSnapshot = !Array.isArray(snapshot);
     const entries = isSnapshot ? snapshot.entries : snapshot;
     const commits = isSnapshot ? snapshot.commits : [];
-    this.entries.clear();
-    this.commits = [];
+    // MERGE, never replace (#115): activation asks before restoring, and
+    // anything the agent buffered while that notice was up is newer than the
+    // snapshot. Clearing first threw those writes away. A path written since
+    // keeps its newer entry; the snapshot's commits come before newer ones.
+    // Saved only when there was newer state to merge: those writes' own
+    // saves replaced the snapshot on disk. A plain restore matches disk.
+    const hadNewer = this.entries.size > 0 || this.commits.length > 0;
     for (const entry of entries) {
-      this.entries.set(entry.path, entry);
+      if (!this.entries.has(entry.path)) this.entries.set(entry.path, entry);
     }
-    for (const commit of commits) {
-      this.commits.push(commit);
-    }
+    this.commits = [...commits, ...this.commits];
+    if (hadNewer) void this.persist();
   }
 
   /**

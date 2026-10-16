@@ -1,8 +1,11 @@
+import * as path from 'path';
 import { describe, it, expect, afterEach } from 'vitest';
 import { workspace } from 'vscode';
 import { checkDocumentGate } from './documentGate.js';
 
 const wsMock = workspace as Record<string, unknown>;
+const ROOT =
+  (workspace.workspaceFolders as { uri: { fsPath: string } }[] | undefined)?.[0]?.uri.fsPath ?? process.cwd();
 
 function setDocs(docs: { uri: { fsPath: string }; isDirty: boolean }[]) {
   wsMock.textDocuments = docs;
@@ -44,6 +47,24 @@ describe('checkDocumentGate', () => {
     setDocs([{ uri: { fsPath: '/workspace/src/utils.ts' }, isDirty: true }]);
     const result = checkDocumentGate(['utils.ts']);
     expect(result.dirty).toBe(true);
+  });
+
+  // #115: a target with a directory, relative to the workspace, never matched
+  // the open document's absolute path.
+  it('matches a workspace-relative target to the open absolute path', () => {
+    setDocs([{ uri: { fsPath: path.resolve(ROOT, 'src/deep/mod.ts') }, isDirty: true }]);
+    expect(checkDocumentGate(['src/deep/mod.ts']).dirtyFiles).toEqual(['src/deep/mod.ts']);
+    expect(checkDocumentGate(['src/other/mod.ts']).dirty).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')('ignores drive-letter and path case on Windows', () => {
+    const abs = path.resolve(ROOT, 'Src/A.ts');
+    setDocs([
+      { uri: { fsPath: abs.replace(/^([a-zA-Z]):/, (_m, d: string) => `${d.toLowerCase()}:`) }, isDirty: true },
+    ]);
+    expect(
+      checkDocumentGate([abs.replace(/^([a-zA-Z]):/, (_m, d: string) => `${d.toUpperCase()}:`).toLowerCase()]).dirty,
+    ).toBe(true);
   });
 
   it('returns only the dirty files among multiple targets', () => {

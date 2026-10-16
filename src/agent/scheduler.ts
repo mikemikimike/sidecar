@@ -1,5 +1,6 @@
 import { workspace, Disposable } from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import type { ScheduledTask } from '../config/settings.js';
 import { SideCarClient } from '../ollama/client.js';
 import { getConfig } from '../config/settings.js';
@@ -11,6 +12,22 @@ import { checkDocumentGate } from './documentGate.js';
 import { FileLock } from './lockPrimitives.js';
 import { parseCron, cronMatches } from './cronParser.js';
 import { matchGlob } from '../util/glob.js';
+
+/** Write a scheduled run's unapplied patch under .sidecar/scheduled-patches/; returns its path, or null. */
+async function savePendingPatch(taskName: string, startedAt: number, diff: string): Promise<string | null> {
+  const root = workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!root) return null;
+  try {
+    const dir = path.join(root, '.sidecar', 'scheduled-patches');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const stamp = new Date(startedAt).toISOString().replace(/[:.]/g, '-');
+    const file = path.join(dir, `${taskName.replace(/[^\w.-]+/g, '_')}-${stamp}.patch`);
+    await fs.promises.writeFile(file, diff, 'utf-8');
+    return file;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Scheduler — runs ScheduledTask entries on three trigger types:
@@ -168,10 +185,22 @@ export class Scheduler implements Disposable {
         this.logger?.warn(
           `[${task.name}] Target files dirty: ${gateCheck.dirtyFiles.join(', ')}. Using Shadow Workspace.`,
         );
-        await runAgentLoopInSandbox(client, messages, callbacks, abortController.signal, options, {
+        const outcome = await runAgentLoopInSandbox(client, messages, callbacks, abortController.signal, options, {
           forceShadow: true,
           deferPrompt: true,
         });
+        // The shadow's changes come back as a patch nobody applies. It was
+        // dropped and the run recorded as a success (#115): keep it on disk
+        // and record that nothing was applied.
+        if (outcome.pendingDiff) {
+          const saved = await savePendingPatch(task.name, startedAt, outcome.pendingDiff);
+          const msg =
+            `changes not applied: ${gateCheck.dirtyFiles.join(', ')} had uncommitted changes. ` +
+            (saved ? `The patch is saved at ${saved} (apply it with git apply).` : 'The patch could not be saved.');
+          this.logger?.warn(`[${task.name}] ${msg}`);
+          this.recordRun(task.name, startedAt, false, msg);
+          return;
+        }
       } else {
         await runAgentLoop(client, messages, callbacks, abortController.signal, options);
       }

@@ -346,3 +346,48 @@ describe('AutoModeStatusBar', () => {
     expect(() => bar.dispose()).not.toThrow();
   });
 });
+
+// #115: an item is "done" only when its run finished and its changes landed,
+// and a failing item is not retried until the session caps run out.
+describe('runAutoMode — done means done (#115)', () => {
+  it('a sandbox whose changes were rejected does not mark the item done', async () => {
+    readFile.mockReset().mockResolvedValue(BACKLOG_ONE as never);
+    runAgentLoopInSandbox.mockResolvedValue({ mode: 'shadow', applied: false, reason: 'rejected' } as never);
+    const cbs = makeCallbacks();
+    const result = await runAutoMode(makeClient(), BASE_OPTS, makeAgentCallbacks(), cbs);
+    expect(cbs.onTaskDone).not.toHaveBeenCalled();
+    expect(cbs.onTaskError).toHaveBeenCalled();
+    expect(realFs.existsSync(backlogPath)).toBe(false); // never rewritten as done
+    expect(result.tasksSucceeded).toBe(0);
+    runAgentLoopInSandbox.mockResolvedValue({ mode: 'direct', applied: true } as never);
+  });
+
+  it('an item that keeps failing is tried twice, not until the task cap', async () => {
+    readFile.mockReset().mockResolvedValue(BACKLOG_ONE as never);
+    runAgentLoopInSandbox.mockRejectedValue(new Error('boom'));
+    const result = await runAutoMode(makeClient(), BASE_OPTS, makeAgentCallbacks(), makeCallbacks());
+    expect(runAgentLoopInSandbox).toHaveBeenCalledTimes(2);
+    expect(result.tasksFailed).toBe(2);
+    expect(result.stoppedReason).toBe('completed');
+    runAgentLoopInSandbox.mockReset().mockResolvedValue({ mode: 'direct', applied: true } as never);
+  });
+
+  it('a run stopped mid-task is not marked done', async () => {
+    readFile.mockReset().mockResolvedValue(BACKLOG_ONE as never);
+    const ctrl = new AbortController();
+    runAgentLoopInSandbox.mockImplementationOnce(async () => {
+      ctrl.abort();
+      return { mode: 'direct', applied: true } as never;
+    });
+    const cbs = makeCallbacks();
+    const result = await runAutoMode(
+      makeClient(),
+      { ...BASE_OPTS, abortSignal: ctrl.signal },
+      makeAgentCallbacks(),
+      cbs,
+    );
+    expect(result.stoppedReason).toBe('cancelled');
+    expect(cbs.onTaskDone).not.toHaveBeenCalled();
+    expect(realFs.existsSync(backlogPath)).toBe(false);
+  });
+});

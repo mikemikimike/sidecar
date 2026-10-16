@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { workspace } from 'vscode';
 
 /**
@@ -12,27 +13,25 @@ export function checkDocumentGate(filePaths: string[]): { dirty: boolean; dirtyF
     return { dirty: false, dirtyFiles: [] };
   }
 
+  // Compare full, absolute paths (#115). Targets are usually relative to the
+  // workspace (`src/a.ts`) and open documents are absolute, so a target with a
+  // directory never matched, and a drive letter's case (`C:` vs `c:`) failed
+  // an exact match. A bare file name still matches any open file of that name:
+  // this gate protects unsaved edits, so matching too much costs a sandbox
+  // run and matching too little costs the user's work.
+  const root = workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
+  const fold = (p: string): string => (caseInsensitive ? p.toLowerCase() : p);
+  const key = (p: string): string => fold(path.resolve(root, p).replace(/\\/g, '/'));
+  const isBareName = (p: string): boolean => !/[\\/]/.test(p);
   const dirtyFiles: string[] = [];
-
   for (const openDoc of workspace.textDocuments) {
-    const openPath = openDoc.uri.fsPath;
-
-    // Check if this open document matches any of the target file paths
-    for (const targetPath of filePaths) {
-      // Normalize both paths for comparison (handle different separators, etc.)
-      const targetNorm = targetPath.replace(/\\/g, '/');
-      const openNorm = openPath.replace(/\\/g, '/');
-
-      if (
-        targetNorm === openNorm ||
-        targetNorm === openNorm.split('/').pop() ||
-        openNorm === targetNorm.split('/').pop()
-      ) {
-        if (openDoc.isDirty) {
-          dirtyFiles.push(targetPath);
-        }
-        break;
-      }
+    if (!openDoc.isDirty) continue;
+    const openKey = key(openDoc.uri.fsPath);
+    const openName = openKey.slice(openKey.lastIndexOf('/') + 1);
+    for (const target of filePaths) {
+      const hit = isBareName(target) ? fold(target) === openName : key(target) === openKey;
+      if (hit && !dirtyFiles.includes(target)) dirtyFiles.push(target);
     }
   }
 
