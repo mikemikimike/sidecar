@@ -138,3 +138,15 @@ describe('renderVizSpec', () => {
     });
   });
 });
+
+// #121: bar chart labels and title were put into the SVG raw (the table path
+// escaped them), so `<` or `&` in a label broke the image.
+describe('renderVizSpec escapes chart text', () => {
+  it('escapes bar labels and the title', () => {
+    const html = renderVizSpec({ type: 'chart', title: 'P&L <2026>', labels: ['a<b', 'R&D'], data: [1, 2] } as VizSpec);
+    expect(html).toContain('P&amp;L &lt;2026&gt;');
+    expect(html).toContain('a&lt;b');
+    expect(html).toContain('R&amp;D');
+    expect(html).not.toContain('>a<b<');
+  });
+});

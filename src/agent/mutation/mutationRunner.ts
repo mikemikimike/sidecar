@@ -1,5 +1,6 @@
 import { generateMutants, type GenerateOptions } from './mutationOperators.js';
 import { scoreMutants, type MutantResult, type MutationScore } from './mutationScore.js';
+import { editWouldBreakSyntax } from '../tools/syntaxCheck.js';
 
 // ---------------------------------------------------------------------------
 // Mutation runner — drive one file's mutants through a test command.
@@ -77,6 +78,15 @@ export async function runMutationTest(
   try {
     for (const m of mutants) {
       if (signal?.aborted) break;
+      // A mutant that does not parse fails every test, so it was scored as
+      // KILLED -- inflating the score with operators that only broke syntax
+      // (`->` turned into `-<=`, a generic's `<T>` flipped) (#121). It is not
+      // a valid mutant: record it as an error, which the score excludes.
+      const syntax = await editWouldBreakSyntax(filePath, original, m.mutatedSource);
+      if (syntax.refuse) {
+        results.push({ mutant: m, outcome: 'error', detail: 'mutant does not parse -- not a valid mutant' });
+        continue;
+      }
       lastWritten = m.mutatedSource;
       await io.write(filePath, m.mutatedSource);
       try {

@@ -43,19 +43,20 @@ function renderBarChart(spec: VizSpec): string {
       const height = (value / maxValue) * chartHeight;
       const x = padding + idx * barWidth + barWidth / 4;
       const y = chartHeight + padding - height;
+      // Escaped like the table path (#121): a `<` or `&` in a label broke the SVG.
       const label = spec.labels[idx] || `Item ${idx}`;
 
       return `
         <rect x="${x}" y="${y}" width="${barWidth / 2}" height="${height}" fill="#3b82f6" />
-        <text x="${x + barWidth / 4}" y="${chartHeight + padding + 20}" text-anchor="middle" font-size="12" fill="#666">${label}</text>
-        <text x="${x + barWidth / 4}" y="${y - 5}" text-anchor="middle" font-size="11" fill="#333">${value}</text>
+        <text x="${x + barWidth / 4}" y="${chartHeight + padding + 20}" text-anchor="middle" font-size="12" fill="#666">${escapeHtml(String(label))}</text>
+        <text x="${x + barWidth / 4}" y="${y - 5}" text-anchor="middle" font-size="11" fill="#333">${escapeHtml(String(value))}</text>
       `;
     })
     .join('\n');
 
   return `
     <svg width="${svgWidth}" height="${chartHeight + padding * 2 + 40}" xmlns="http://www.w3.org/2000/svg" style="border: 1px solid #e5e7eb; border-radius: 6px; background: white;">
-      <text x="${svgWidth / 2}" y="25" text-anchor="middle" font-size="16" font-weight="bold" fill="#1f2937">${title}</text>
+      <text x="${svgWidth / 2}" y="25" text-anchor="middle" font-size="16" font-weight="bold" fill="#1f2937">${escapeHtml(title)}</text>
       ${bars}
       <line x1="${padding}" y1="${chartHeight + padding}" x2="${svgWidth - padding}" y2="${chartHeight + padding}" stroke="#d1d5db" stroke-width="1" />
     </svg>

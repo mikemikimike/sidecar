@@ -117,7 +117,8 @@ function relationalHits(masked: string): Hit[] {
     [/<=/g, '>'],
     [/>=/g, '<'],
     [/(?<![<=])<(?![<=])/g, '>='],
-    [/(?<![>=])>(?![>=])/g, '<='],
+    // Not the `>` of `->` (Python/PHP/C return arrows, member access) (#121).
+    [/(?<![>=-])>(?![>=])/g, '<='],
   ];
   const hits: Hit[] = [];
   const taken = new Set<number>();
