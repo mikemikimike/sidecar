@@ -4,8 +4,83 @@ All notable changes to the SideCar extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.129.0] - 2026-10-16
+
+Mostly about the agent doing what it meant to do, and nothing else. `edit_file` lands more
+of the edits models actually send and keeps files exactly as they were outside the change;
+cut-off tool calls and printed code blocks can no longer damage files; the agent asks
+before installing anything; and the syntax check no longer switches itself off in long
+sessions. It also fixes the remaining issues from the October code review.
+
+### Changed
+
+- **Installing anything new always asks you, in every mode.** A command that installs a
+  package (npm, pip, cargo, go, gem, composer, dotnet and more), runs a package straight from
+  a registry (`npx -y`, `uvx`, `bunx`, ...), installs system software (apt, brew, winget,
+  choco, ...) or pipes a remote script into a shell now needs your approval, even in
+  autonomous mode and even when you asked for the install. Restoring what the project
+  already declares (`npm install`, `pip install -r`, ...) does not ask. (#166)
+- **The agent no longer builds tooling to satisfy its own checks.** When a project has no
+  type checker, linter or test runner installed, the agent says which one is missing and
+  asks whether you want it, instead of installing one, editing `package.json` or
+  `tsconfig.json`, or writing throwaway test files. (#166, #170)
+
 ### Fixed
 
+- **`edit_file` writes what the model meant, more often.** A batch of fixes from a
+  measurement of thousands of recorded agent runs:
+  - Files keep their encoding, byte-order mark and line endings. The first edit to a
+    Latin-1 / Windows-1252 file no longer turns every accented letter, curly quote and euro
+    sign in it into `�`, and `write_file` over a CRLF file no longer converts it to LF.
+    (#165)
+  - A model that echoes a carriage return as the text `<0x0D>` (gemma4) no longer has every
+    such edit fail, or the text written into the file. (#155)
+  - A search that differs from the file only in blank lines matches, and the file keeps its
+    own blank lines. A search that left out a non-blank line is answered with the exact
+    region and the skipped line. (#155)
+  - Whitespace-tolerant matching writes the right bytes: indentation is mapped level by
+    level instead of shifted by the first line, and line endings stay whole. (#159)
+  - Escaped code (`import math\n\ndef add...`) is decoded only outside strings, so a
+    `print("\nUsage")` keeps its escape. (#158)
+  - `search`/`replace` sent as an array of lines are joined instead of rejected.
+  - An edit that changes nothing is reported as "No change needed", not "File edited". A
+    method body restated after an insertion is no longer written twice. "Already applied"
+    is answered only when the replacement really is in the file, and repeating an applied
+    edit says it is a repeat. (#160)
+- **A tool call cut off mid-way is never run.** A call cut off at the output limit was
+  "repaired" into a shorter, complete-looking call and run — a `write_file` lost everything
+  after the cut. Such calls, and every call from a response whose stream ended early, are
+  now refused with the reason, and the model is asked to send them again. (#164)
+- **A code block in the agent's reply no longer replaces a whole file.** When the agent
+  printed code without calling a tool, SideCar could write that block over the file it
+  named — a printed loop replaced a whole script. Blocks that keep less than half of the
+  file are refused, a block that is already in the file (the agent showing an edit it made)
+  is not written at all, and the agent is no longer told such code "was not saved". (#164)
+- **The syntax check stays on.** It leaked memory and, after enough checks in one session,
+  stopped checking and allowed every edit. It now also catches an orphaned Python `else`,
+  names the first error rather than the last, and checks `.mts`, `.cts`, `.pyi`, `.h`,
+  `.hpp`, `.cc`, `.cxx` and `.kts` files. (#157)
+- **Files with a shell `case` statement no longer break code indexing.** Parsing one
+  corrupted the parser for every language, and up to 3% of a repository's files silently went
+  missing from find-references, impact analysis and project-knowledge search.
+- **Ollama tool calls with invalid JSON are asked for again** instead of ending the run with
+  "Ollama error: invalid character".
+- **SideCar starts in a window with no folder open.** The chat view, status bar and most
+  commands were missing. (#142)
+- **Gemini 3 tool use works over the OpenAI-compatible API**, and a base URL ending in `/v1`
+  no longer requests `/v1/v1/models`. (#143)
+- **Running a command runs it once.** In terminal mode an approved command could run a
+  second time in the background, and background command ids were never found again. (#144)
+- **Conversation history keeps its turns.** Reconnect re-sends the failed prompt instead of
+  re-running and deleting the previous answer, trimming no longer starts history at an
+  orphaned tool result, large images no longer push turns out, and stopping a retry no
+  longer merges a half-finished run. (#140)
+- **Restores and applies no longer overwrite newer work.** Revert without a snapshot no
+  longer discards uncommitted edits, Accept All flushes only the files it showed, parallel
+  review-mode edits both survive, and a stopped `mutation_test` no longer restores over
+  newer edits. (#139)
+- **`.sidecar/.gitignore` is no longer rewritten on every start** when it already ignores
+  `memory/`.
 - **Accepting a sandboxed run failed with "corrupt patch".** When a `/sandbox` run, a fork or
   a facet changed only existing files, the patch lost its final newline and `git apply`
   rejected it, so the work was discarded. Accept now applies it, binary files included.
@@ -14,6 +89,10 @@ All notable changes to the SideCar extension will be documented in this file.
 - **`git_stash` and `git_branch` in a sandboxed run acted on your own repository.** The stash
   and branches are shared by every worktree, so a popped stash left your repository and was
   lost with the sandbox. Stash and branch changes are refused there now. (#141)
+
+### Stats
+- 9833 total tests (550 test files)
+- 87 built-in tools, 11 skills
 
 ## [0.128.0] - 2026-10-08
 
