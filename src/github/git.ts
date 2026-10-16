@@ -101,15 +101,21 @@ export class GitCLI {
   async diff(ref1?: string, ref2?: string): Promise<GitDiffResult> {
     assertGitName(ref1, 'ref');
     assertGitName(ref2, 'ref');
-    const args = ['diff', '--stat'];
-    if (ref1) args.push(ref1);
-    if (ref2) args.push(ref2);
-    const summary = await this.exec(args);
-
-    const fullArgs = ['diff'];
-    if (ref1) fullArgs.push(ref1);
-    if (ref2) fullArgs.push(ref2);
-    let diff = await this.exec(fullArgs);
+    // With no refs, diff against HEAD: staged AND unstaged changes, as the
+    // tool's description promises (#118). Plain `git diff` showed unstaged
+    // changes only, so staged work looked like "No changes." A repository
+    // with no commits has no HEAD; there the plain diff is all there is.
+    let refs = [ref1, ref2].filter((r): r is string => !!r);
+    if (refs.length === 0) {
+      try {
+        await this.exec(['rev-parse', '--verify', '--quiet', 'HEAD']);
+        refs = ['HEAD'];
+      } catch {
+        refs = [];
+      }
+    }
+    const summary = await this.exec(['diff', '--stat', ...refs]);
+    let diff = await this.exec(['diff', ...refs]);
 
     if (diff.length > MAX_DIFF_LENGTH) {
       diff = diff.slice(0, MAX_DIFF_LENGTH) + '\n\n[truncated]';

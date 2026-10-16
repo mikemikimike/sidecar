@@ -227,3 +227,23 @@ describe('parseJobLog — line windowing', () => {
     expect(joined).toContain('[… lines omitted …]');
   });
 });
+
+// #118: in a real Actions log the group is the step's HEADER (the command
+// and its env); the output and the ##[error] follow ##[endgroup]. Ending the
+// step at ##[endgroup] dropped exactly the lines that explain the failure.
+describe('parseJobLog — output after the step header group (#118)', () => {
+  it("keeps the step's output and error after ##[endgroup]", () => {
+    const log = makeLog(
+      group('Run npm test'),
+      line('npm test'),
+      endgroup(),
+      line('FAIL src/foo.test.ts'),
+      line('  AssertionError: expected 1 to equal 2'),
+      error('Process completed with exit code 1.'),
+    );
+    const result = parseJobLog(log);
+    expect(result.failedSteps).toHaveLength(1);
+    expect(result.failedSteps[0].name).toBe('Run npm test');
+    expect(result.failedSteps[0].errorLines.join('\n')).toContain('AssertionError');
+  });
+});

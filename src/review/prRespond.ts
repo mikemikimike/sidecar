@@ -52,7 +52,7 @@ export function buildRespondPrompt(pr: PullRequest, threads: PrReviewThread[]): 
     `   - If valid: make the appropriate code change, then call \`reply_pr_comment\` explaining what you changed.\n` +
     `   - If not applicable: call \`reply_pr_comment\` with a concise explanation of why the existing approach is correct.\n` +
     `3. After addressing all threads, call \`submit_pr_review\` with a brief summary of what was done.\n\n` +
-    `Use pr_number=${pr.number} for all tool calls. The comment_id for each thread is the number in parentheses after "Thread" in the headings below.\n\n` +
+    `Use pr_number=${pr.number} for all tool calls. The comment_id for each thread is the number after "comment_id" in its heading below (not the line number).\n\n` +
     `---\n\n` +
     review
   );

@@ -85,9 +85,11 @@ describe('suggestCommitMessage', () => {
     expect(repo.inputBox.value).toBe('feat(api): add retry logic');
   });
 
-  it('truncates the diff to 400 chars in the prompt', async () => {
+  // #118: the cut was 400 chars -- a few lines of the first file -- so the
+  // message described a fraction of the change. It is 8,000 now.
+  it('truncates the diff to 8,000 chars in the prompt, and says so', async () => {
     // Distinguishable head vs tail so containment checks are unambiguous
-    const diff = 'A'.repeat(400) + 'B'.repeat(200);
+    const diff = 'A'.repeat(8000) + 'B'.repeat(200);
     const repo = makeRepo(diff);
     vi.mocked(extensions.getExtension).mockReturnValue({
       exports: { getAPI: () => ({ repositories: [repo] }) },
@@ -98,8 +100,9 @@ describe('suggestCommitMessage', () => {
 
     const [[messages]] = vi.mocked(client.streamChat).mock.calls;
     const promptText = (messages[0].content[0] as { text: string }).text;
-    expect(promptText).toContain('A'.repeat(400));
+    expect(promptText).toContain('A'.repeat(8000));
     expect(promptText).not.toContain('B');
+    expect(promptText).toContain('[diff truncated]');
   });
 
   it('ignores non-text stream events', async () => {
