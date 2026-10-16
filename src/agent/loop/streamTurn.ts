@@ -6,8 +6,8 @@ import { getContentText } from '../../ollama/types.js';
 import type { AgentCallbacks } from '../loop.js';
 import type { LoopState } from './state.js';
 import {
-  FENCE_WRITE_ID_PREFIX,
   parseTextToolCallsCleaned,
+  printedCodeTarget,
   stripRepeatedContent,
   synthesizeFenceWrite,
 } from './textParsing.js';
@@ -68,6 +68,14 @@ export interface TurnResult {
   stopReason: string;
   /** Non-`'none'` when the stream bailed early. */
   terminated: TurnTermination;
+  /**
+   * A write_file synthesized from a printed code fence, not yet dispatched:
+   * the loop decides whether it runs (fenceWrite.ts applyFenceWrite), because
+   * that needs the file, and this resolution is synchronous.
+   */
+  fenceWrite?: { path: string; content: string };
+  /** The code a text-only turn printed for its one target file (textParsing printedCodeTarget), for the same check. */
+  printedCode?: { path: string; code: string };
 }
 
 /**
@@ -436,7 +444,16 @@ export function resolveTurnContent(turn: TurnResult, state: LoopState, callbacks
     if (parsed.length > 0) {
       stopReason = 'tool_use';
       fullText = cleanedText;
-    } else if (state.config.codeAsTextRecoveryEnabled === true && state.fenceWriteCoercions < 2) {
+    } else if (state.config.codeAsTextRecoveryEnabled === true) {
+      const printed = printedCodeTarget(fullText, state.userRequestText ?? lastUserMessageText(state.messages));
+      const base = {
+        fullText,
+        pendingToolUses,
+        stopReason,
+        terminated: turn.terminated,
+        ...(printed ? { printedCode: printed } : {}),
+      };
+      if (state.fenceWriteCoercions >= 2) return base;
       // Code-as-text last resort: the turn printed the complete target file in
       // a source fence ("now let's write this to the file") and called nothing.
       // The campaign corpus put this at 20/27 of the remaining on-arm failures,
@@ -470,24 +487,8 @@ export function resolveTurnContent(turn: TurnResult, state: LoopState, callbacks
         isMutationRequest(userText) && !looksLikeDeclinedAction(fullText) && !alreadyDone
           ? synthesizeFenceWrite(fullText, userText, new Set(iterationTools.map((t) => t.name)))
           : null;
-      if (synth) {
-        state.fenceWriteCoercions++;
-        const tu: ToolUseContentBlock = {
-          type: 'tool_use',
-          id: `${FENCE_WRITE_ID_PREFIX}${state.fenceWriteCoercions}`,
-          name: synth.name,
-          input: synth.input,
-        };
-        pendingToolUses.push(tu);
-        stopReason = 'tool_use';
-        state.logger?.info(
-          `Fence-write coercion (${state.fenceWriteCoercions}/2): synthesized write_file(${synth.input.path}) ` +
-            `from a printed code fence with no tool call`,
-        );
-        callbacks.onText(`\n✍️ No tool call was made — writing the code block you printed to ${synth.input.path}.\n`);
-        state.logger?.logToolCall(tu.name, tu.input);
-        callbacks.onToolCall(tu.name, tu.input, tu.id);
-      }
+      // Dispatched (or not) by the loop: see fenceWrite.ts.
+      return synth ? { ...base, fenceWrite: synth.input } : base;
     }
   }
 

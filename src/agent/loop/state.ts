@@ -313,6 +313,14 @@ export interface LoopState {
   fenceWriteCoercions: number;
 
   /**
+   * This turn printed a code block that is already in its target file, so it
+   * is showing finished work, not failing to save it (fenceWrite.ts). Set per
+   * turn by applyFenceWrite; read by the action reprompt, which must not tell
+   * the model "the code you printed was NOT saved" about code that is saved.
+   */
+  printedCodeAlreadyInFile: boolean;
+
+  /**
    * Files successfully read via read_file during this loop run.
    * Persists across iterations so that a file read in iteration N is
    * still "known" in iteration N+1 when the model tries to edit it.
@@ -455,6 +463,7 @@ export function initLoopState(messages: ChatMessage[], options: AgentOptions): L
     stubFixRetries: 0,
     actionRepromptCount: 0,
     fenceWriteCoercions: 0,
+    printedCodeAlreadyInFile: false,
     filesReadThisRun: new Set<string>(),
     editedSinceRead: new Set<string>(),
     unappliedEditNudged: false,
