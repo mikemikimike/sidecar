@@ -89,11 +89,38 @@ describe('extractFailures', () => {
   });
 
   it('captures top-level ##[error] lines with a placeholder step name', () => {
-    const log = stamp(['##[group]build', 'ok', '##[endgroup]', '##[error]The job was cancelled.']);
+    // Before any step has started, an error belongs to no step.
+    const log = stamp(['##[error]The job was cancelled.', '##[group]build', 'ok', '##[endgroup]']);
     const blocks = extractFailures(log);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].stepName).toBe('(top-level)');
     expect(blocks[0].errorLines[0]).toBe('The job was cancelled.');
+  });
+
+  // #118: the real Actions shape -- the group is the step's header, and the
+  // command's output and its ##[error] come AFTER ##[endgroup]. Those lines
+  // were dropped and the error reported as a one-line "(top-level)" block.
+  it("keeps a step's output after its header group, and attributes its errors to the step", () => {
+    const log = stamp([
+      '##[group]Run npm test',
+      'npm test',
+      '##[endgroup]',
+      'FAIL src/a.test.ts > adds',
+      'AssertionError: expected 3 to be 4',
+      '##[error]Process completed with exit code 1.',
+    ]);
+    const blocks = extractFailures(log);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].stepName).toBe('Run npm test');
+    expect(blocks[0].errorLines).toContain('Process completed with exit code 1.');
+    expect(JSON.stringify(blocks[0])).toContain('AssertionError: expected 3 to be 4');
+  });
+
+  it('merges repeated errors in one step into one block', () => {
+    const log = stamp(['##[group]Run npm test', '##[endgroup]', '##[error]first', 'more output', '##[error]second']);
+    const blocks = extractFailures(log);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].errorLines).toEqual(['first', 'second']);
   });
 
   it('ignores groups without any ##[error] annotations entirely', () => {

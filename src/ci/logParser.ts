@@ -90,7 +90,9 @@ export function parseJobLog(rawLog: string, maxBytes = 4_000_000): ParsedJobLog 
         current = { name: stripAnsi(arg.trim()), lines: [], hasError: false };
         steps.push(current);
       } else if (cmd === 'endgroup') {
-        current = null;
+        // The group is the step's HEADER; its output follows until the next
+        // ##[group], so the step continues (#118). Ending it here dropped the
+        // command's output and every ##[error] after it.
       } else if (cmd === 'error') {
         if (current) {
           current.hasError = true;

@@ -151,8 +151,11 @@ export function formatPrReviewMarkdown(pr: PullRequest, threads: PrReviewThread[
   for (const [filePath, fileThreads] of byFile) {
     parts.push(`## ${filePath}`, ``);
     for (const thread of fileThreads) {
-      const lineLabel = thread.line !== null ? ` (line ${thread.line})` : '';
-      parts.push(`### Thread${lineLabel}`, ``);
+      // The root comment's id is what reply_pr_comment needs (#118): the
+      // heading showed only the line number, which the respond prompt then
+      // called "the comment_id", so every reply went to a nonexistent comment.
+      const lineLabel = thread.line !== null ? `, line ${thread.line}` : '';
+      parts.push(`### Thread (comment_id ${thread.id}${lineLabel})`, ``);
       parts.push('```diff');
       parts.push(thread.diffHunk);
       parts.push('```', ``);

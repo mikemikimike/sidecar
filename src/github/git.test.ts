@@ -80,9 +80,27 @@ describe('GitCLI', () => {
         cb(fn)(null, '+line\n-line', '');
         return ret();
       });
-    const result = await git.diff();
+    const result = await git.diff('main');
     expect(result.summary).toContain('1 file changed');
     expect(result.diff).toContain('+line');
+  });
+
+  // #118: with no refs the tool promised staged + unstaged changes but ran a
+  // plain `git diff` (unstaged only). It diffs against HEAD now.
+  it('diff with no refs compares against HEAD, so staged changes are included', async () => {
+    const calls: string[][] = [];
+    mockExecFile.mockImplementation((_cmd, rawArgs, _opts, fn: unknown) => {
+      const args = [...(rawArgs ?? [])];
+      calls.push(args);
+      cb(fn)(null, args[0] === 'rev-parse' ? 'abc123' : 'out', '');
+      return ret();
+    });
+    await git.diff();
+    expect(calls.slice(-2)).toEqual([
+      ['diff', '--stat', 'HEAD'],
+      ['diff', 'HEAD'],
+    ]);
+    mockExecFile.mockReset();
   });
 
   it('diff truncates long diffs', async () => {
@@ -95,7 +113,7 @@ describe('GitCLI', () => {
         cb(fn)(null, 'x'.repeat(20000), '');
         return ret();
       });
-    const result = await git.diff();
+    const result = await git.diff('main');
     expect(result.diff).toContain('[truncated]');
     expect(result.diff.length).toBeLessThan(15000);
   });

@@ -69,11 +69,11 @@ export function extractFailures(log: string, options: ExtractOptions = {}): Fail
     }
 
     if (GROUP_END.test(line)) {
-      // Step boundary — emit any collected errors for this step.
-      // Works even when a step is skipped or has no errors; the
-      // collection stays empty and nothing leaks to the output.
-      currentStep = null;
-      currentStepLines = [];
+      // NOT a step boundary (#118): in a GitHub Actions log the group wraps
+      // only the step's header (the command and its env); the command's
+      // OUTPUT -- the failure itself -- follows ##[endgroup] until the next
+      // ##[group]. Ending the step here dropped exactly those lines, and the
+      // step's ##[error] became a one-line "(top-level)" block.
       continue;
     }
 
@@ -109,7 +109,10 @@ export function extractFailures(log: string, options: ExtractOptions = {}): Fail
   const merged: Array<{ stepName: string; lines: string[]; errorIndices: number[] }> = [];
   for (const range of errorRanges) {
     const last = merged[merged.length - 1];
-    if (last && last.stepName === range.stepName && last.lines === range.lines) {
+    // Same step: each range holds a snapshot of the step so far, so the later
+    // one contains the earlier. (This compared the arrays by reference, and
+    // every snapshot is a copy, so nothing ever merged -- #118.)
+    if (last && last.stepName === range.stepName) {
       // Same step: merge error indices into the latest block. The
       // `lines` array is the step's full accumulated content, so we
       // just append this error's index.

@@ -320,3 +320,12 @@ describe('formatPrReviewMarkdown', () => {
     expect(md).toContain('2 review thread(s)');
   });
 });
+
+// #118: the respond prompt says the comment_id is in each thread's heading,
+// but the heading carried only the LINE number, so every reply 404'd.
+describe('thread headings carry the root comment id (#118)', () => {
+  it('shows comment_id and line, distinct numbers', () => {
+    const md = formatPrReviewMarkdown(makePr(), [makeThread({ id: 98765, line: 42 })]);
+    expect(md).toContain('### Thread (comment_id 98765, line 42)');
+  });
+});

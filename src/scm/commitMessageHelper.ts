@@ -29,7 +29,11 @@ export async function suggestCommitMessage(createClient: () => SideCarClient): P
     return;
   }
 
-  const prompt = `Write a conventional-commit message (type(scope): subject, then a blank line and bullet body if needed) for these staged changes. Max 100 chars subject. Output ONLY the commit message:\n\n\`\`\`diff\n${diff.slice(0, 400)}\n\`\`\``;
+  // 400 chars was a few lines of the first file, so the message described a
+  // fraction of the change (#118).
+  const MAX_DIFF_CHARS = 8000;
+  const shownDiff = diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n[diff truncated]` : diff;
+  const prompt = `Write a conventional-commit message (type(scope): subject, then a blank line and bullet body if needed) for these staged changes. Max 100 chars subject. Output ONLY the commit message:\n\n\`\`\`diff\n${shownDiff}\n\`\`\``;
 
   await vscode.window.withProgress(
     {
