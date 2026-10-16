@@ -116,3 +116,12 @@ describe('generateMutants — options', () => {
     expect(ids).toEqual(['relational#1', 'arithmetic#1']);
   });
 });
+
+// #121: the `>` of a return arrow (`def f() -> int`) was mutated to `-<=`.
+describe('relational mutants leave arrows alone', () => {
+  it('no mutant touches `->`', () => {
+    const mutants = generateMutants('def f(a, b) -> bool:\n    return a > b\n', { operators: ['relational'] });
+    expect(mutants.every((m) => !m.mutatedSource.includes('-<='))).toBe(true);
+    expect(mutants.some((m) => m.mutatedSource.includes('a <= b'))).toBe(true);
+  });
+});

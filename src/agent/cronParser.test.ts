@@ -82,8 +82,47 @@ describe('cronMatches', () => {
     expect(cronMatches(cron, date(0, 0, 1, 2, 0))).toBe(false);
   });
 
-  it('ignores unknown field syntax gracefully', () => {
-    const cron = parseCron('abc * * * *')!;
-    expect(cronMatches(cron, date(0, 0, 1, 1, 0))).toBe(false);
+  // #121: a bad field used to parse into a matcher that never fired, so the
+  // task silently never ran. The expression is rejected now (the scheduler
+  // warns and skips it).
+  it('rejects unknown field syntax and out-of-range values', () => {
+    expect(parseCron('abc * * * *')).toBeNull();
+    expect(parseCron('60 * * * *')).toBeNull();
+    expect(parseCron('* 5-3 * * *')).toBeNull();
+    expect(parseCron('*/0 * * * *')).toBeNull();
+  });
+});
+
+describe('cron semantics (#121)', () => {
+  it('a step on a range: 0-23/6 is hours 0, 6, 12 and 18, not every hour', () => {
+    const cron = parseCron('0 0-23/6 * * *')!;
+    expect([0, 6, 12, 18].every((h) => cronMatches(cron, date(0, h, 15, 1, 0)))).toBe(true);
+    expect(cronMatches(cron, date(0, 1, 15, 1, 0))).toBe(false);
+  });
+
+  it('n/step starts at n: 5/20 is minutes 5, 25 and 45', () => {
+    const cron = parseCron('5/20 * * * *')!;
+    expect([5, 25, 45].every((m) => cronMatches(cron, date(m, 3, 15, 1, 0)))).toBe(true);
+    expect(cronMatches(cron, date(0, 3, 15, 1, 0))).toBe(false);
+  });
+
+  it('weekday 7 is Sunday, like 0', () => {
+    const cron = parseCron('0 9 * * 7')!;
+    const sunday = new Date(2026, 9, 18, 9, 0); // Sun 18 Oct 2026
+    expect(sunday.getDay()).toBe(0);
+    expect(cronMatches(cron, sunday)).toBe(true);
+  });
+
+  it('day-of-month and weekday both restricted: either one fires (POSIX)', () => {
+    const cron = parseCron('0 9 1 * 1')!; // the 1st, and every Monday
+    expect(cronMatches(cron, new Date(2026, 9, 1, 9, 0))).toBe(true); // Thu 1 Oct
+    expect(cronMatches(cron, new Date(2026, 9, 19, 9, 0))).toBe(true); // Mon 19 Oct
+    expect(cronMatches(cron, new Date(2026, 9, 20, 9, 0))).toBe(false); // Tue 20 Oct
+  });
+
+  it('with one of them unrestricted, both must match as before', () => {
+    const cron = parseCron('0 9 * * 1')!;
+    expect(cronMatches(cron, new Date(2026, 9, 19, 9, 0))).toBe(true);
+    expect(cronMatches(cron, new Date(2026, 9, 20, 9, 0))).toBe(false);
   });
 });

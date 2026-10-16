@@ -177,3 +177,16 @@ describe('runMutationTest — Stop', () => {
     expect(content).toBe('the next run edited this');
   });
 });
+
+// #121: a mutant that does not parse fails every test and was scored KILLED.
+describe('unparseable mutants are not kills', () => {
+  it("a generic's `<` mutant is an error; the real comparison mutant still counts", async () => {
+    const src = 'export const xs: Array<number> = [];\nexport const big = (a: number): boolean => a > 1;\n';
+    const io = fakeIo(src, (content) => ({ passed: content === src, output: content === src ? '' : 'FAIL' }));
+    const run = await runMutationTest('m.ts', io, { operators: ['relational'] });
+    const byOutcome = (o: string) => run.results.filter((r) => r.outcome === o).map((r) => r.mutant.mutatedSource);
+    expect(byOutcome('killed').some((s) => s.includes('a <= 1'))).toBe(true);
+    expect(byOutcome('killed').some((s) => s.includes('Array>=number'))).toBe(false);
+    expect(byOutcome('error').some((s) => s.includes('Array>=number'))).toBe(true);
+  });
+});
