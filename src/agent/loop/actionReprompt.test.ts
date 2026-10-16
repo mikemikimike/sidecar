@@ -432,6 +432,20 @@ describe('maybeInjectActionReprompt', () => {
     expect(text).toContain('write_file(path="calculator.py"');
   });
 
+  // 2026-10-15 release eval, gemma4:31b: a correct edit_file, then a summary
+  // showing the edited lines. "The code you printed was NOT saved" was false,
+  // and talked the model into a redundant whole-file write_file.
+  it('does not fire when the printed code is already in the file (a summary of a saved edit)', () => {
+    const state = makeState('In src/validators.py, add a negative-value check to FieldValidator7.');
+    state.printedCodeAlreadyInFile = true;
+    const cb = stubCallbacks();
+    const summary =
+      'I have updated FieldValidator7:\n```python\n        if value < 0:\n            return False\n```\n';
+    expect(maybeInjectActionReprompt(state, summary, cb)).toBe(false);
+    expect(state.messages).toHaveLength(1);
+    expect(state.actionRepromptCount).toBe(0);
+  });
+
   it('calls out the fabricated <tool_output> when the model roleplays a tool result', () => {
     const state = makeState('Now add multiply and divide to calculator.py.');
     const cb = stubCallbacks();

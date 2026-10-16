@@ -674,6 +674,67 @@ const LANG_TO_EXTS: Record<string, string[]> = {
 /** Workspace-file references (same shape as actionReprompt's FILE_PATH_RE, global). */
 const FILE_REF_RE = /\b[\w./-]*\w+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|cpp|c|rb|sh|yaml|yml|json|toml)\b/g;
 
+const CONFLICT_MARKER = /^[ \t]*(?:<{4,}|={4,}|>{4,})/m;
+
+/**
+ * A printed block that DESCRIBES a change instead of holding code: merge-
+ * conflict markers (`<<<<` old `====` new `>>>>`, which gemma4:31b prints as
+ * its edit summary), a unified diff, or a +/- block. Never file content, so
+ * never written (2026-10-15 release eval: it was, as a fence write).
+ */
+export function isChangeNotation(body: string): boolean {
+  if (CONFLICT_MARKER.test(body) || /^@@ /m.test(body)) return true;
+  const lines = body.split('\n').filter((l) => l.trim() !== '');
+  return (
+    lines.length > 0 &&
+    lines.some((l) => l.startsWith('-')) &&
+    lines.some((l) => l.startsWith('+')) &&
+    lines.every((l) => /^[-+ ]/.test(l))
+  );
+}
+
+/** The code a printed block shows as the RESULT: the new side of change notation, otherwise the block itself. */
+export function newSideOf(body: string): string {
+  if (!isChangeNotation(body)) return body;
+  const out: string[] = [];
+  if (CONFLICT_MARKER.test(body)) {
+    // Conflict markers: keep what is outside them and the side after `====`.
+    let side: 'out' | 'old' | 'new' = 'out';
+    for (const line of body.split('\n')) {
+      if (/^[ \t]*<{4,}/.test(line)) side = 'old';
+      else if (/^[ \t]*={4,}/.test(line)) side = 'new';
+      else if (/^[ \t]*>{4,}/.test(line)) side = 'out';
+      else if (side !== 'old') out.push(line);
+    }
+  } else {
+    // A diff: drop headers and removed lines; added and context lines lose their one-character marker.
+    for (const line of body.split('\n')) {
+      if (/^(?:@@ |\+\+\+|---)/.test(line) || line.startsWith('-')) continue;
+      out.push(line.startsWith('+') || line.startsWith(' ') ? line.slice(1) : line);
+    }
+  }
+  return out.join('\n');
+}
+
+/**
+ * The code a text-only turn printed for the one file the user named: the
+ * largest source fence's new side (newSideOf), or null. Used to tell a turn
+ * that SHOWS finished work (its code is already in the file) from one that
+ * failed to save it -- see loop/fenceWrite.ts.
+ */
+export function printedCodeTarget(text: string, userText: string): { path: string; code: string } | null {
+  const refs = [...new Set(userText.match(FILE_REF_RE) ?? [])].filter((ref) => !isLibraryName(ref));
+  if (refs.length !== 1) return null;
+  let best = '';
+  const fence = /```([\w+#]*)\s*\n([\s\S]*?)```/g;
+  for (let m = fence.exec(text); m !== null; m = fence.exec(text)) {
+    if (!SOURCE_FENCE_LANGS.has(m[1].toLowerCase())) continue;
+    if (m[2].length > best.length) best = m[2];
+  }
+  const code = newSideOf(best);
+  return code.trim() === '' ? null : { path: refs[0], code };
+}
+
 /** Real-code heuristic shared with unappliedEdit: a keyword/operator plus ≥2 lines. */
 const FENCE_CODE_STRUCTURE = /\b(function|const|let|var|def|class|return|import|export|if|for|while)\b|=>|[;{}]/;
 
@@ -713,6 +774,7 @@ export function synthesizeFenceWrite(
     const lang = m[1].toLowerCase();
     const body = m[2];
     if (!SOURCE_FENCE_LANGS.has(lang)) continue;
+    if (isChangeNotation(body)) continue; // a described change is not file content
     const lines = body.split('\n').filter((l) => l.trim().length > 0);
     if (lines.length < 2 || !FENCE_CODE_STRUCTURE.test(body)) continue; // not edit-shaped
     if (/^\s*[A-Za-z_]\w*\s*\(/.test(body)) continue; // call carrier — pattern 5's job

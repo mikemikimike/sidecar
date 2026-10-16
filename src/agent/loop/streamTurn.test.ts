@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { stubLoopState } from './testHelpers.js';
 import { streamOneTurn, resolveTurnContent } from './streamTurn';
+import { applyFenceWrite } from './fenceWrite.js';
 import type { AgentCallbacks } from '../loop.js';
 import type { StreamEvent } from '../../ollama/types.js';
 
@@ -383,11 +384,15 @@ describe('fence-write coercion — already-done escape', () => {
     expect(result.stopReason).not.toBe('tool_use');
   });
 
-  it('still synthesizes the write when the latest result shows real progress', () => {
+  it('still synthesizes the write when the latest result shows real progress', async () => {
     const state = makeCoercionState('<tool_output tool="edit_file">\nFile edited: src/other.ts\n</tool_output>');
     const onToolCall = vi.fn();
+    const callbacks = makeCallbacks({ onToolCall });
     const turn = { fullText: FENCE_TURN, pendingToolUses: [], stopReason: 'stop', terminated: undefined };
-    const result = resolveTurnContent(turn as never, state, makeCallbacks({ onToolCall }));
+    const result = resolveTurnContent(turn as never, state, callbacks);
+    // Synthesized here, dispatched by the loop once it has checked the file (fenceWrite.ts).
+    expect(result.fenceWrite).toMatchObject({ path: 'src/minmax.ts' });
+    await applyFenceWrite(result, state, callbacks, async () => null);
     expect(onToolCall).toHaveBeenCalledWith(
       'write_file',
       expect.objectContaining({ path: 'src/minmax.ts' }),

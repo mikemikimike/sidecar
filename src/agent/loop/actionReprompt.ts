@@ -383,6 +383,17 @@ export function maybeInjectActionReprompt(state: LoopState, fullText: string, ca
     return false;
   }
 
+  // The turn's code block is already in its target file: the model is showing
+  // the edit it made, not failing to make it. Telling it "the code you printed
+  // was NOT saved -- write_file the complete file" was false, and a model that
+  // had just checked the file and seen its edit there was talked into a
+  // redundant whole-file rewrite (2026-10-15 release eval, gemma4:31b, every
+  // trial of large-file-anchored-insertion). See fenceWrite.ts.
+  if (state.printedCodeAlreadyInFile) {
+    state.logger?.info('Action-request reprompt suppressed: the printed code is already in the file');
+    return false;
+  }
+
   // Intent-aware escapes — keyed on run state, not request phrasing. Only for
   // turns triggered by the REQUEST's shape: text that itself announces
   // deferred intent ("I will now edit…") is still a stall regardless of what

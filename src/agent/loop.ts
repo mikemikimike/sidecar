@@ -49,6 +49,7 @@ import { getSdkHooks } from '../sdk/registry.js';
 import { dispatchPendingToolUses } from './loop/dispatchToolUses.js';
 import { repairMalformedToolUses } from './loop/toolCallRepair.js';
 import { withholdUnfinishedToolCalls } from './loop/withheldToolCalls.js';
+import { applyFenceWrite } from './loop/fenceWrite.js';
 import { notifyIterationStart, maybeEmitProgressSummary, shouldStopAtCheckpoint } from './loop/notifications.js';
 import { finalize } from './loop/finalize.js';
 import { maybeForceFinalAnswer } from './loop/forceFinalAnswer.js';
@@ -706,6 +707,9 @@ export async function runAgentLoop(
       }
 
       const resolved = resolveTurnContent(rawTurn, state, callbacks);
+      // A code block printed with no tool call becomes write_file only when
+      // it is not already in the file (fenceWrite.ts).
+      await applyFenceWrite(resolved, state, callbacks, makeWorkspaceRatchetIo(state.cwdOverride).read);
       const { fullText, pendingToolUses } = resolved;
 
       // A call from a turn that did not finish never runs -- and is never
