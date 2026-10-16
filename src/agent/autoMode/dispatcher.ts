@@ -65,6 +65,10 @@ export async function runAutoMode(
   let tasksFailed = 0;
 
   const signal = options.abortSignal ?? new AbortController().signal;
+  // Failed attempts per item, by text: a failing item stayed pending and was
+  // picked again every time until the task or runtime cap stopped the
+  // session (#115). After MAX_ATTEMPTS_PER_ITEM it is skipped this session.
+  const failures = new Map<string, number>();
 
   for (;;) {
     // --- Session guards ---
@@ -88,7 +92,7 @@ export async function runAutoMode(
     }
 
     const items = parseBacklog(content);
-    const item = nextPendingItem(items);
+    const item = nextPendingItem(items.filter((i) => (failures.get(i.text) ?? 0) < MAX_ATTEMPTS_PER_ITEM));
     if (!item) {
       return finish('completed');
     }
@@ -112,7 +116,7 @@ export async function runAutoMode(
 
     const config = options.config ?? getConfig();
     try {
-      await runAgentLoopInSandbox(
+      const outcome = await runAgentLoopInSandbox(
         client,
         messages,
         agentCallbacks,
@@ -131,7 +135,15 @@ export async function runAutoMode(
         },
       );
 
-      // Mark done on success
+      // Done means the task finished AND its changes landed (#115). A stopped
+      // run, or a sandbox whose diff was rejected, failed to apply or was
+      // deferred, was still marked done in the user's backlog. An empty diff
+      // counts as done: the agent may have found nothing to change.
+      if (signal.aborted) return finish('cancelled');
+      if (outcome.mode === 'shadow' && !outcome.applied && outcome.reason !== 'empty-diff') {
+        throw new Error(`the task's changes were not applied (${outcome.reason ?? 'unknown'})`);
+      }
+
       const fresh = await fs.readFile(options.backlogPath, 'utf8');
       // Atomic: this is the user's backlog. A crash mid-write truncates their
       // task list, and the surrounding catch would report it as a failed task
@@ -142,6 +154,7 @@ export async function runAutoMode(
       callbacks.onTaskDone(item, taskN, totalPending);
     } catch (err) {
       tasksFailed++;
+      failures.set(item.text, (failures.get(item.text) ?? 0) + 1);
       callbacks.onTaskError(item, err);
       if (options.haltOnFailure) {
         return finish('halted-on-failure');
@@ -165,6 +178,9 @@ export async function runAutoMode(
     return result;
   }
 }
+
+/** Attempts an item gets in one session before it is skipped. */
+const MAX_ATTEMPTS_PER_ITEM = 2;
 
 function buildTaskPrompt(taskText: string): string {
   return (

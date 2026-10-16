@@ -94,7 +94,8 @@ export function registerBackgroundAgentsView(context: ExtensionContext, manager:
   const updateStatusBar = (): void => {
     const runs = manager.list();
     const active = runs.filter((r) => r.status === 'running' || r.status === 'queued');
-    const lastCompleted = runs.find((r) => r.status === 'completed' || r.status === 'failed');
+    // The list is in start order, so the LAST finished run is the latest; find() showed the oldest (#115).
+    const lastCompleted = [...runs].reverse().find((r) => r.status === 'completed' || r.status === 'failed');
 
     if (active.length > 0) {
       clearTimeout(lingerTimer);

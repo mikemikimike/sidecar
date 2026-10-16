@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { workspace, Uri } from 'vscode';
 import { AuditBuffer } from './auditBuffer.js';
+
+// The default Audit Mode commit runner (#115) goes through GitCLI; never run real git here.
+const gitCalls = vi.hoisted(() => ({
+  stage: vi.fn(async () => 'staged'),
+  commit: vi.fn(async () => 'Committed: abc123'),
+}));
+vi.mock('../../github/git.js', () => ({
+  GitCLI: vi.fn(function GitCLI(this: unknown, cwd?: string) {
+    return { cwd, stage: gitCalls.stage, commit: gitCalls.commit };
+  }),
+}));
 import {
   reviewAuditBuffer,
   acceptAllAuditBuffer,
@@ -942,5 +953,35 @@ describe('reviewAuditBuffer — per-hunk granularity', () => {
     expect(ui.openDiff).toHaveBeenCalledTimes(1);
     expect(writeFileSpy).toHaveBeenCalledTimes(1);
     expect(buf.has('new.ts')).toBe(false);
+  });
+});
+
+// #115: no command passed a commit runner, so every commit the agent queued in
+// Audit Mode stayed in the buffer forever.
+describe('Accept runs queued commits by default (#115)', () => {
+  it('stages exactly the applied files and commits with the queued message and trailers', async () => {
+    gitCalls.stage.mockClear();
+    gitCalls.commit.mockClear();
+    const buf = await makeBufferWith([{ op: 'write', path: 'a.ts', content: 'X' }]);
+    await buf.queueCommit('feat: a', 'X-AI-Model: m');
+    // This file's disk mock differs from the buffered original; that conflict is not under test.
+    const ui = makeUi({ showConflictDialog: vi.fn(async () => 'apply-anyway' as const) });
+    await acceptAllAuditBuffer(baseDeps(buf, ui));
+    expect(gitCalls.stage).toHaveBeenCalledWith(['a.ts']);
+    expect(gitCalls.commit).toHaveBeenCalledWith('feat: a', 'X-AI-Model: m');
+    expect(ui.showError).not.toHaveBeenCalled();
+  });
+});
+
+describe('restore() keeps writes buffered after the snapshot (#115)', () => {
+  it('a path written since keeps its newer entry; other recovered entries come back', async () => {
+    const buf = await makeBufferWith([{ op: 'write', path: 'new.ts', content: 'NEWER' }]);
+    buf.restore([
+      { path: 'new.ts', op: 'modify', content: 'OLDER', originalContent: 'o', timestamp: 1 },
+      { path: 'recovered.ts', op: 'create', content: 'r', timestamp: 2 },
+    ]);
+    const byPath = new Map(buf.list().map((e) => [e.path, e.content]));
+    expect(byPath.get('new.ts')).toBe('NEWER');
+    expect(byPath.get('recovered.ts')).toBe('r');
   });
 });

@@ -5,6 +5,21 @@ import { realPathRefusal } from '../tools/shared.js';
 import { readTextFile, writeTextFile } from '../tools/textFileIo.js';
 import { computeUnifiedDiff, computeHunks, applySelectedHunks, type DiffHunk } from '../diff.js';
 import { getAuditDecorationProvider } from '../../testing/auditDecorations.js';
+import { GitCLI } from '../../github/git.js';
+
+/**
+ * Run a queued Audit Mode commit: stage exactly the files the flush applied,
+ * then commit the way git_commit does (same trailers). No caller passed an
+ * executeCommit, so every commit the agent queued in Audit Mode was kept in
+ * the buffer forever and never ran (#115).
+ */
+function gitAuditCommit(rootPath: string) {
+  return async (message: string, extraTrailers: string | undefined, appliedPaths: string[]): Promise<string> => {
+    const git = new GitCLI(rootPath);
+    if (appliedPaths.length > 0) await git.stage(appliedPaths);
+    return git.commit(message, extraTrailers);
+  };
+}
 
 /**
  * Audit Mode review commands — the user-facing side of the buffer
@@ -508,7 +523,12 @@ export async function flushBufferPaths(deps: AuditReviewDeps, paths?: string[]):
   }
 
   try {
-    const result = await buf.flush(writeDisk, deleteDisk, paths, deps.executeCommit);
+    const result = await buf.flush(
+      writeDisk,
+      deleteDisk,
+      paths,
+      deps.executeCommit ?? gitAuditCommit(deps.rootUri.fsPath),
+    );
     getAuditDecorationProvider()?.refresh();
     const n = result.applied.length;
     const c = result.committed.length;
