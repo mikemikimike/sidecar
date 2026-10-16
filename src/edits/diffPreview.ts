@@ -1,6 +1,6 @@
 import { workspace, window, commands, Uri } from 'vscode';
 import type { EditBlock } from './parser.js';
-import type { ProposedContentProvider } from './proposedContentProvider.js';
+import { previewKey, type ProposedContentProvider } from './proposedContentProvider.js';
 
 export async function showDiffPreview(
   block: EditBlock,
@@ -17,7 +17,7 @@ export async function showDiffPreview(
   const proposedText = originalText.replace(block.searchText, block.replaceText);
 
   // Register proposed content
-  const key = `/${block.filePath}`;
+  const key = previewKey(block.filePath);
   const proposedUri = contentProvider.addProposal(key, proposedText);
 
   // Open diff view

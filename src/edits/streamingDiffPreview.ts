@@ -12,7 +12,7 @@
  */
 
 import { workspace, window, commands, Uri, ViewColumn } from 'vscode';
-import type { ProposedContentProvider } from './proposedContentProvider.js';
+import { previewKey, type ProposedContentProvider } from './proposedContentProvider.js';
 import { computeUnifiedDiff } from './unifiedDiff.js';
 
 export interface DiffPreviewSession {
@@ -54,7 +54,7 @@ export async function openDiffPreview(
   }
 
   const originalUri = Uri.joinPath(workspaceFolders[0].uri, filePath);
-  const key = `/${filePath}`;
+  const key = previewKey(filePath);
 
   // Read the original for diff computation. Gracefully ignore errors
   // (new file, unreadable) — the diff block just won't appear.
