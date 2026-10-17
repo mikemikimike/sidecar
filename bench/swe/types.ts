@@ -82,6 +82,17 @@ export interface SwePrediction {
    */
   failureReason?: string | null;
   /**
+   * Touched paths the patch capture left out, and why (outside the clone, a
+   * scratch file since removed, gitignored). Absent when none were.
+   */
+  captureDropped?: import('./captureDiff.js').DroppedPath[];
+  /**
+   * Why the patch capture itself failed, when it did -- the patch is then ''.
+   * Before this field an empty patch could mean either "no change" or "the
+   * capture threw", and nothing told them apart.
+   */
+  captureError?: string;
+  /**
    * Did the RAG retrieve a file the gold patch touches within the top-k
    * (localization recall)? SWE-bench as a retrieval benchmark. Undefined when
    * the gold patch wasn't available (or on older meta files).

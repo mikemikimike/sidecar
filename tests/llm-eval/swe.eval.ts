@@ -38,6 +38,7 @@ import { armConfigOverrides } from '../../bench/swe/arms.js';
 import { SCAFFOLD_VERSION, describeScaffold } from '../../src/agent/scaffoldVersion.js';
 import { toPredictionsJsonl } from '../../bench/swe/predictions.js';
 import { classifyFailure } from '../../bench/swe/failureClassification.js';
+import { captureDiff, type DroppedPath } from '../../bench/swe/captureDiff.js';
 import { wholeSuiteGuard } from '../../bench/swe/wholeSuiteGuard.js';
 import { renderTestModuleHint } from '../../bench/swe/testModules.js';
 import { loadOrBuildRepoIndex, retrieveContext, goldFilesInTopK } from '../../bench/swe/rag.js';
@@ -398,30 +399,6 @@ function cleanupRepoClones(): void {
   repoClones.clear();
 }
 
-/**
- * The agent's patch, scoped to the files it ACTUALLY edited, diffed against
- * base_commit — not a whole-repo `git diff`.
- *
- * A whole-repo diff trusts the repo tree to be pristine-base + the agent's
- * edits. That trust is fragile: any repo-state drift (a stray `git` in the
- * agent's shell, an env-setup step, or — observed live — two eval processes
- * sharing one cached clone and issuing conflicting `git reset`s) makes the diff
- * explode to hundreds of unrelated files (django-10914: a clean one-line fix
- * came back as a 475KB / 256-file "patch" because the tree had drifted to main).
- *
- * Scoping to `touchedPaths` (every edit_file/write_file/delete_file target) makes
- * the capture immune to that: unrelated files can drift all they want and never
- * reach the patch. base_commit stays the reference so a committed fix is still
- * captured (django-11848). Empty edits (edited then reverted) diff to nothing and
- * drop out. Returns '' when the agent touched no files.
- */
-function captureDiff(dir: string, baseCommit: string, touchedPaths: Set<string>): string {
-  const paths = [...touchedPaths];
-  if (paths.length === 0) return '';
-  git(['add', '-A', '--', ...paths], dir);
-  return git(['diff', '--cached', baseCommit, '--', ...paths], dir);
-}
-
 const RETRIEVAL_TOPK = parseInt(process.env.SIDECAR_SWE_RETRIEVAL_TOPK ?? '6', 10);
 // Mirrors SIDECAR_EVAL_CLIFF_GATE in agentHarness. The SWE path hardcoded the
 // gate on, so the arm where injection was actually measured to hurt (top-6
@@ -491,6 +468,10 @@ async function solve(task: SweTask, arm: ArmName): Promise<SwePrediction> {
   // Files the agent mutated (edit_file/write_file/delete_file targets). captureDiff
   // scopes the patch to exactly these, so unrelated repo-state drift can't pollute it.
   const touchedPaths = new Set<string>();
+  // Touched paths captureDiff left out (outside the clone, scratch files since
+  // removed, ignored), and the error if the capture itself failed.
+  let captureDropped: DroppedPath[] = [];
+  let captureError: string | null = null;
   // Did the RAG retrieve a gold-patch file in the top-k (localization recall)?
   // SWE-bench as a RAG benchmark — undefined when the gold patch isn't known.
   let retrievalRecall: boolean | undefined;
@@ -757,10 +738,23 @@ async function solve(task: SweTask, arm: ArmName): Promise<SwePrediction> {
     // scaffolded arms.
     // `dir` is null only when prepareRepo itself threw — no checkout, so there
     // is genuinely nothing on disk to salvage.
+    // A failed capture used to be swallowed into '' -- indistinguishable from
+    // "the agent changed nothing". It is now logged and recorded on the row.
     try {
-      patch = dir ? captureDiff(dir, task.base_commit, touchedPaths) : '';
-    } catch {
+      if (dir) {
+        const captured = captureDiff(dir, task.base_commit, touchedPaths);
+        patch = captured.patch;
+        captureDropped = captured.dropped;
+        if (captureDropped.length > 0) {
+          console.log(
+            `[swe]   ${task.instance_id}: capture left out ${captureDropped.map((d) => `${d.path} (${d.reason})`).join(', ')}`,
+          );
+        }
+      }
+    } catch (err) {
       patch = '';
+      captureError = (err as Error).message.split('\n')[0];
+      console.warn(`[swe]   ${task.instance_id}: PATCH CAPTURE FAILED: ${captureError}`);
     }
     if (restoreMock) restoreMock();
     // Dispose the per-task shell. ToolRuntime spawns a PERSISTENT shell whose
@@ -785,6 +779,8 @@ async function solve(task: SweTask, arm: ArmName): Promise<SwePrediction> {
     terminationBucket,
     toolCalls,
     failureReason,
+    ...(captureDropped.length > 0 ? { captureDropped } : {}),
+    ...(captureError ? { captureError } : {}),
     retrievalRecall,
     ratchetReverted,
     peakInputTokens,
