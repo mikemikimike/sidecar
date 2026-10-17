@@ -3658,35 +3658,5 @@
     "uuid": ">=14.0.0",
     "diff": ">=9.0.0",
     "serialize-javascript": ">=7.0.5"
-  },
-  "lint-staged": {
-    "src/**/*.ts": [
-      "prettier --write",
-      "eslint --max-warnings=0 --no-warn-ignored",
-      "bash -c 'tsc --noEmit'",
-      "bash -c 'vitest run --silent --exclude \"**/shadowWorkspace.test.ts\" --exclude \"**/shadowSweep.test.ts\"'"
-    ],
-    "tests/**/*.ts": [
-      "prettier --write",
-      "eslint --max-warnings=0 --no-warn-ignored",
-      "bash -c 'tsc -p tsconfig.tests.json'",
-      "bash -c 'vitest run --silent --exclude \"**/shadowWorkspace.test.ts\" --exclude \"**/shadowSweep.test.ts\"'"
-    ],
-    "bench/**/*.ts": [
-      "prettier --write",
-      "eslint --max-warnings=0 --no-warn-ignored",
-      "bash -c 'tsc -p tsconfig.bench.json'",
-      "bash -c 'vitest run bench/ --silent'"
-    ],
-    "media/**/*.css": [
-      "prettier --write"
-    ],
-    "media/**/*.js": [
-      "prettier --write",
-      "eslint --max-warnings=0"
-    ],
-    "**/*.{md,json}": [
-      "prettier --write"
-    ]
   }
 }
