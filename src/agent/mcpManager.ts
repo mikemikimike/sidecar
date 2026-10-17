@@ -118,6 +118,8 @@ interface MCPConnection {
   /** Qualified tool name → readOnlyHint from the server's ToolAnnotations.
    * Absent annotations are recorded as false (conservatively a mutation). */
   toolReadOnlyByName: Map<string, boolean>;
+  /** Qualified tool name → the server's own name for the tool. */
+  bareToolName: Map<string, string>;
   status: MCPServerStatus;
   error?: string;
   connectedAt?: number;
@@ -152,6 +154,26 @@ function classifyReadOnly(mcpTool: { name: string; annotations?: { readOnlyHint?
   const hint = mcpTool.annotations?.readOnlyHint;
   if (hint !== undefined) return hint === true;
   return READ_ONLY_NAME_RE.test(mcpTool.name);
+}
+
+/** The tool-name shape every provider accepts (OpenAI's is the strictest). */
+const MAX_TOOL_NAME = 64;
+
+/**
+ * `mcp_<server>_<tool>`, reduced to `[A-Za-z0-9_-]`, capped at 64 characters
+ * and made unique against `taken`. A server or tool name with `.`, `/` or a
+ * space produced a name providers reject -- and since every request carries
+ * the whole catalog, every request failed (#120). Two raw names that reduce
+ * to the same string get `_2`, `_3`, ...
+ */
+export function qualifyToolName(server: string, tool: string, taken: ReadonlySet<string>): string {
+  const base = `mcp_${server}_${tool}`.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, MAX_TOOL_NAME);
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const suffix = `_${n}`;
+    const candidate = base.slice(0, MAX_TOOL_NAME - suffix.length) + suffix;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 /** Cap on the schema JSON appended to a failed lazy-tool call. */
@@ -253,9 +275,14 @@ export class MCPManager {
       transportType,
       tools: [],
       toolReadOnlyByName: new Map(),
+      bareToolName: new Map(),
       status: 'connecting',
     };
     this.connections.push(conn);
+    // disconnect() or reconnectServer() may drop this connection while it is
+    // still connecting. It must then stop, not go on to schedule a reconnect
+    // that re-adds a server the user removed (#120).
+    const removed = () => !this.connections.includes(conn);
 
     // Hard-block stdio transports in untrusted workspaces. stdio = spawn
     // an arbitrary command with the user's full privileges; a cloned
@@ -294,6 +321,12 @@ export class MCPManager {
 
       // Discover tools
       const toolsResult = await client.listTools();
+      if (removed()) {
+        conn.status = 'disconnected';
+        await client.close().catch(() => {});
+        return;
+      }
+      const taken = new Set(this.connections.filter((c) => c !== conn).flatMap((c) => [...c.bareToolName.keys()]));
       const maxResultChars = config.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
       const toolConfigs = config.tools || {};
 
@@ -309,7 +342,9 @@ export class MCPManager {
           return true;
         })
         .map((mcpTool) => {
-          const qualifiedName = `mcp_${name}_${mcpTool.name}`;
+          const qualifiedName = qualifyToolName(name, mcpTool.name, taken);
+          taken.add(qualifiedName);
+          conn.bareToolName.set(qualifiedName, mcpTool.name);
           conn.toolReadOnlyByName.set(qualifiedName, classifyReadOnly(mcpTool));
           // Lazy-loaded tools show an empty stub schema in the catalog, so a
           // model that skips describe_tool calls with guessed args. When such
@@ -436,6 +471,7 @@ export class MCPManager {
       this.rebuildToolCache();
       this.notifyStatusChange();
     } catch (err) {
+      if (removed()) return;
       const msg = err instanceof Error ? err.message : String(err);
       conn.status = 'failed';
       conn.error = msg;
@@ -520,7 +556,7 @@ export class MCPManager {
    * this, the burst delays would always restart from 2s on every new conn.
    */
   private scheduleReconnect(conn: MCPConnection): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.connections.includes(conn)) return;
 
     // Cancel any in-flight timer so two concurrent failure paths don't both
     // schedule reconnects for the same conn and create a duplicate entry.
@@ -668,7 +704,7 @@ export class MCPManager {
   getServerToolNames(serverName: string): string[] {
     const conn = this.connections.find((c) => c.name === serverName);
     if (!conn) return [];
-    return conn.tools.map((t) => t.definition.name.replace(`mcp_${serverName}_`, ''));
+    return conn.tools.map((t) => conn.bareToolName.get(t.definition.name) ?? t.definition.name);
   }
 
   /**
@@ -677,8 +713,8 @@ export class MCPManager {
    * identical to what the orchestrator receives via the tool cache path.
    */
   async callServerTool(serverName: string, toolName: string, input: Record<string, unknown>): Promise<string> {
-    const qualifiedName = `mcp_${serverName}_${toolName}`;
-    const tool = this.toolCache.find((t) => t.definition.name === qualifiedName);
+    const conn = this.connections.find((c) => c.name === serverName && c.status === 'connected');
+    const tool = conn?.tools.find((t) => conn.bareToolName.get(t.definition.name) === toolName);
     if (!tool) {
       throw new Error(
         `MCP tool "${toolName}" not found on server "${serverName}". ` +

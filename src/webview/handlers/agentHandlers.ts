@@ -10,7 +10,7 @@ import * as path from 'path';
 import type { ChatState } from '../chatState.js';
 import { getConfig, resolveMode } from '../../config/settings.js';
 import { parsePlanFromText } from '../../agent/plans/externalPlan.js';
-import { handleUserMessage, approvalUiOptions } from './chatHandlers.js';
+import { handleUserMessage, approvalUiOptions, buildSystemPromptForRun } from './chatHandlers.js';
 import { parseBatchInput, runBatch } from '../../agent/batch.js';
 import { recordUserAuthoredText } from '../../agent/conversationSummarizer.js';
 import { generateSpec, saveSpec } from '../../agent/specDriven.js';
@@ -74,6 +74,19 @@ export async function handleBatch(state: ChatState, text: string): Promise<void>
   state.client.updateModel(config.model);
 
   try {
+    // The same system prompt a chat run gets. Without this the batch ran
+    // under whatever the last command left on the client -- /init's or
+    // /doc's single-purpose prompt, say (#120).
+    const { systemPrompt } = await buildSystemPromptForRun(
+      state,
+      config,
+      tasks.join('\n'),
+      resolved.approvalBehavior,
+      resolved.systemPrompt,
+      abortController.signal,
+    );
+    state.client.updateSystemPrompt(systemPrompt);
+
     await runBatch(
       state.client,
       tasks,

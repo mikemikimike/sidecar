@@ -324,3 +324,19 @@ describe('McpAgentServer — browser and DNS-rebinding guard', () => {
     }
   });
 });
+
+describe('McpAgentServer.clampMaxIterations (#120)', () => {
+  it('falls back to the default for a non-numeric value instead of running zero iterations', () => {
+    expect(McpAgentServer.clampMaxIterations('abc')).toBe(20);
+    expect(McpAgentServer.clampMaxIterations(NaN)).toBe(20);
+    expect(McpAgentServer.clampMaxIterations(null)).toBe(20);
+    expect(McpAgentServer.clampMaxIterations({})).toBe(20);
+  });
+
+  it('accepts numeric strings and clamps to 1..40', () => {
+    expect(McpAgentServer.clampMaxIterations('8')).toBe(8);
+    expect(McpAgentServer.clampMaxIterations(2.7)).toBe(2);
+    expect(McpAgentServer.clampMaxIterations(0)).toBe(1);
+    expect(McpAgentServer.clampMaxIterations(999)).toBe(40);
+  });
+});

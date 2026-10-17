@@ -291,6 +291,9 @@ async function runSafetensorsImport(
       });
       return;
     }
+    // Clear the progress bar, as the other install paths do; it stayed up
+    // after a failed import (#120).
+    state.postMessage({ command: 'installComplete', modelName: ollamaName });
     state.postMessage({
       command: 'error',
       content: `Failed to install ${ollamaName}: ${err instanceof Error ? err.message : String(err)}`,

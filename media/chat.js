@@ -699,6 +699,18 @@
   // the audio to the extension host for local Whisper transcription.
   // Falls back to the external browser recording server if getUserMedia is
   // blocked (e.g. VS Code Web or a stripped-down webview environment).
+  /**
+   * Base64 of a byte array, built in chunks. Spreading the whole array into
+   * String.fromCharCode overflowed the call stack past ~2 s of audio (#120).
+   */
+  function bytesToBase64(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
   if (micBtn) {
     let mediaRecorder = null;
     let audioChunks = [];
@@ -734,14 +746,15 @@
           reader.onloadend = async () => {
             micBtn.textContent = '⏳';
             micBtn.disabled = true;
+            let audioCtx = null;
             try {
               const arrayBuffer = await blob.arrayBuffer();
-              const audioCtx = new AudioContext({ sampleRate: 16000 });
+              audioCtx = new AudioContext({ sampleRate: 16000 });
               const decoded = await audioCtx.decodeAudioData(arrayBuffer);
               const pcm = decoded.getChannelData(0); // Float32Array, mono, 16 kHz
               vscode.postMessage({
                 command: 'voiceAudio',
-                pcmBase64: btoa(String.fromCharCode(...new Uint8Array(pcm.buffer))),
+                pcmBase64: bytesToBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)),
                 mimeType: 'audio/pcm-f32le',
               });
             } catch (err) {
@@ -752,6 +765,10 @@
                 mimeType: 'audio/webm',
                 voiceError: err.message,
               });
+            } finally {
+              // One context per recording; unclosed ones pile up until the
+              // browser refuses to create more (#120).
+              if (audioCtx) audioCtx.close().catch(() => {});
             }
           };
           reader.readAsArrayBuffer(blob);

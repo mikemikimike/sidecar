@@ -20,8 +20,27 @@ function newSessionId(): string {
   return `session_${Date.now()}_${++_idCounter}`;
 }
 
+/**
+ * Listeners told after any SessionManager writes. Module-level because the
+ * chat and the Sessions view each hold their own manager over the same
+ * storage, and the view only refreshed after its own commands -- a save from
+ * the chat never appeared (#120).
+ */
+const changeListeners = new Set<() => void>();
+
+/** Subscribe to session-list changes; returns the unsubscribe function. */
+export function onDidChangeSessions(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
 export class SessionManager {
   constructor(private globalState: Memento) {}
+
+  private store(sessions: SavedSession[]): void {
+    this.globalState.update(STORAGE_KEY, sessions);
+    for (const listener of changeListeners) listener();
+  }
 
   save(name: string, messages: ChatMessage[]): SavedSession {
     const sessions = this.list();
@@ -40,7 +59,7 @@ export class SessionManager {
     };
 
     sessions.push(session);
-    this.globalState.update(STORAGE_KEY, sessions);
+    this.store(sessions);
     return session;
   }
 
@@ -66,7 +85,7 @@ export class SessionManager {
       content: serializeContent(m.content),
     }));
     session.updatedAt = Date.now();
-    this.globalState.update(STORAGE_KEY, sessions);
+    this.store(sessions);
     return true;
   }
 
@@ -76,7 +95,7 @@ export class SessionManager {
     if (!session) return false;
     session.name = newName;
     session.updatedAt = Date.now();
-    this.globalState.update(STORAGE_KEY, sessions);
+    this.store(sessions);
     return true;
   }
 
@@ -100,7 +119,7 @@ export class SessionManager {
     };
 
     sessions.push(child);
-    this.globalState.update(STORAGE_KEY, sessions);
+    this.store(sessions);
     return child;
   }
 
@@ -111,6 +130,6 @@ export class SessionManager {
 
   delete(id: string): void {
     const sessions = this.list().filter((s) => s.id !== id);
-    this.globalState.update(STORAGE_KEY, sessions);
+    this.store(sessions);
   }
 }

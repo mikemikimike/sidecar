@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { transcribeAudio } from './transcriptionClient.js';
+import { transcribeAudio, float32ToWav } from './transcriptionClient.js';
 import type { TranscriptionOptions } from './transcriptionClient.js';
 
 const BASE_OPTS: TranscriptionOptions = {
@@ -215,5 +215,39 @@ describe('transcribeAudio', () => {
         expect(appendedFilename).toBe(expectedFilename);
       });
     }
+  });
+});
+
+// #120: both recorders produce headerless Float32 PCM, which Whisper-compatible
+// APIs reject; it is uploaded as a 16-bit WAV.
+describe('raw PCM upload', () => {
+  function f32(...samples: number[]): Buffer {
+    const b = Buffer.alloc(samples.length * 4);
+    samples.forEach((s, i) => b.writeFloatLE(s, i * 4));
+    return b;
+  }
+
+  it('wraps Float32 samples in a 16 kHz mono 16-bit WAV', () => {
+    const wav = float32ToWav(f32(0, 1, -1, 0.5, 2));
+    expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
+    expect(wav.readUInt16LE(20)).toBe(1); // PCM
+    expect(wav.readUInt16LE(22)).toBe(1); // mono
+    expect(wav.readUInt32LE(24)).toBe(16_000);
+    expect(wav.readUInt16LE(34)).toBe(16);
+    expect(wav.readUInt32LE(40)).toBe(10);
+    expect(wav.readUInt32LE(4)).toBe(wav.length - 8);
+    const samples = [0, 1, 2, 3, 4].map((i) => wav.readInt16LE(44 + i * 2));
+    expect(samples).toEqual([0, 32767, -32768, 16384, 32767]); // clipped above 1
+  });
+
+  it('uploads audio/pcm-f32le as audio.wav with a RIFF header', async () => {
+    const mockFetch = makeFetch(200, { text: 'ok' });
+    vi.stubGlobal('fetch', mockFetch);
+    await transcribeAudio(f32(0.1, -0.1), 'audio/pcm-f32le', BASE_OPTS);
+    const file = ((mockFetch.mock.calls[0][1] as RequestInit).body as FormData).get('file') as File;
+    expect(file.name).toBe('audio.wav');
+    expect(file.type).toBe('audio/wav');
+    expect(Buffer.from(await file.arrayBuffer()).toString('ascii', 0, 4)).toBe('RIFF');
   });
 });

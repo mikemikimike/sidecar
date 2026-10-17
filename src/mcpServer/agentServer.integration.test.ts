@@ -276,3 +276,58 @@ describe('McpAgentServer — concurrency guard (MCP)', () => {
     await server.stop();
   });
 });
+
+// #120: a running task outlived its caller -- neither a client hanging up nor
+// stop() aborted it, and stop() waited on the open connection until it ended.
+describe('McpAgentServer — aborting a running task', () => {
+  /** A loop that runs until its signal aborts, recording that it did. */
+  function loopUntilAborted() {
+    const seen = { started: false, aborted: false };
+    mockLoop.mockImplementationOnce(async (_c, _m, _cb, signal: AbortSignal) => {
+      seen.started = true;
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      seen.aborted = true;
+      return [];
+    });
+    return seen;
+  }
+
+  async function startCall(server: McpAgentServer, signal?: AbortSignal) {
+    const client = new Client({ name: 'test', version: '1.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.getStatus().port}/mcp`));
+    await client.connect(transport);
+    const call = client.callTool({ name: 'run_agent_task', arguments: { task: 'long' } }, undefined, { signal });
+    return { client, call: call.catch(() => undefined) };
+  }
+
+  it('aborts the task when the client disconnects', async () => {
+    vi.clearAllMocks();
+    const seen = loopUntilAborted();
+    const server = new McpAgentServer(makeOptions());
+    await server.start();
+    try {
+      const { client, call } = await startCall(server);
+      await vi.waitFor(() => expect(seen.started).toBe(true));
+      await client.close();
+      await call;
+      await vi.waitFor(() => expect(seen.aborted).toBe(true));
+      await vi.waitFor(() => expect(server.getStatus().activeTaskCount).toBe(0));
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('stop() aborts a running task instead of waiting for it', async () => {
+    vi.clearAllMocks();
+    const seen = loopUntilAborted();
+    const server = new McpAgentServer(makeOptions());
+    await server.start();
+    const { client, call } = await startCall(server);
+    await vi.waitFor(() => expect(seen.started).toBe(true));
+
+    await server.stop();
+    expect(seen.aborted).toBe(true);
+    await call;
+    await client.close().catch(() => {});
+  });
+});

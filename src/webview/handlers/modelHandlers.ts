@@ -16,7 +16,30 @@ import { checkMemoryPreflight } from '../../system/memoryMonitor.js';
 
 export { loadModels } from './modelLoader.js';
 
+/**
+ * Chats with an install in flight. Installs share one abort controller and one
+ * progress bar, so a second install overwrote the first's Cancel target, and
+ * the first one finishing cleared the second's (#120). One at a time.
+ */
+const installing = new WeakSet<ChatState>();
+
 export async function handleInstallModel(state: ChatState, modelName: string): Promise<void> {
+  if (installing.has(state)) {
+    state.postMessage({
+      command: 'assistantMessage',
+      content: `Another model install is still running. Wait for it to finish, or cancel it, before installing **${modelName}**.\n\n`,
+    });
+    return;
+  }
+  installing.add(state);
+  try {
+    await installModel(state, modelName);
+  } finally {
+    installing.delete(state);
+  }
+}
+
+async function installModel(state: ChatState, modelName: string): Promise<void> {
   // HuggingFace inspection + safetensors/GGUF classification only applies to
   // local Ollama. Other backends have their own management APIs.
   if (state.client.isLocalOllama()) {

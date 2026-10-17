@@ -438,6 +438,64 @@ describe('handleInstallModel', () => {
     );
   });
 
+  it('clears the progress bar when a safetensors import fails (#120)', async () => {
+    const state = mockState();
+    state.client.listLibraryModels = vi.fn().mockResolvedValue([]);
+    mockHFInfo([
+      { rfilename: 'model.safetensors', size: 1_000_000_000 },
+      { rfilename: 'config.json', size: 1_000 },
+    ]);
+    mockHFTree([
+      { path: 'model.safetensors', size: 1_000_000_000 },
+      { path: 'config.json', size: 1_000 },
+    ]);
+    mockHFConfigJson('LlamaForCausalLM');
+    vi.spyOn(window, 'showQuickPick').mockResolvedValue({ label: 'q4_K_M', quant: 'q4_K_M' } as never);
+    mockImport.mockImplementation(async function* () {
+      throw new Error('ollama create failed');
+    });
+
+    await handleInstallModel(state as never, 'https://huggingface.co/meta-llama/Llama-3-8B');
+
+    const commands = state.postMessage.mock.calls.map((c: unknown[]) => (c[0] as { command: string }).command);
+    expect(commands).toContain('error');
+    expect(commands.lastIndexOf('installComplete')).toBeGreaterThan(commands.lastIndexOf('installProgress'));
+  });
+
+  it('refuses a second install while one is running, leaving the first cancellable (#120)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    async function* slowPull() {
+      yield { status: 'pulling manifest' };
+      await gate;
+      yield { status: 'success' };
+    }
+    const state = mockState();
+    state.client.pullModel = vi.fn(() => slowPull());
+    state.client.listLibraryModels = vi.fn().mockResolvedValue([]);
+    mockFetch.mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) });
+
+    const first = handleInstallModel(state as never, 'llama3');
+    await vi.waitFor(() => expect(state.installAbortController).not.toBeNull());
+    const firstController = state.installAbortController;
+
+    await handleInstallModel(state as never, 'qwen3');
+    expect(state.client.pullModel).toHaveBeenCalledTimes(1);
+    expect(state.installAbortController).toBe(firstController);
+    expect(state.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('Another model install is still running') }),
+    );
+
+    release();
+    await first;
+    // Free again once the first finishes.
+    state.client.pullModel = vi.fn(() => slowPull());
+    const third = handleInstallModel(state as never, 'qwen3');
+    await vi.waitFor(() => expect(state.client.pullModel).toHaveBeenCalledTimes(1));
+    release();
+    await third;
+  });
+
   it('falls through to ollama pull when a bare org/repo input is not on HF', async () => {
     // User types `hhao/qwen2.5-coder` — a legit Ollama community model
     // that isn't on HuggingFace. We should try HF first, get a 404,

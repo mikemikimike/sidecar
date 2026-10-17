@@ -55,7 +55,7 @@ vi.mock('./mcpAuditLog.js', () => ({
   setMcpAuditDir: vi.fn(),
 }));
 
-import { MCPManager, mergeMcpConfigs, wrapMcpOutput, detectInjectionSignals } from './mcpManager.js';
+import { MCPManager, mergeMcpConfigs, wrapMcpOutput, detectInjectionSignals, qualifyToolName } from './mcpManager.js';
 import { logMcpEvent } from './mcpAuditLog.js';
 
 describe('MCPManager', () => {
@@ -99,6 +99,57 @@ describe('MCPManager', () => {
     const defs = manager.getToolDefinitions();
     expect(defs[0].name).toBe('mcp_fs_read');
     expect(defs[1].name).toBe('mcp_fs_write');
+  });
+
+  describe('tool names providers accept (#120)', () => {
+    it('reduces names to [A-Za-z0-9_-], caps them at 64, and de-duplicates', () => {
+      expect(qualifyToolName('my server', 'files/read.v2', new Set())).toBe('mcp_my_server_files_read_v2');
+      expect(qualifyToolName('a.b', 'c', new Set(['mcp_a_b_c']))).toBe('mcp_a_b_c_2');
+      expect(qualifyToolName('a.b', 'c', new Set(['mcp_a_b_c', 'mcp_a_b_c_2']))).toBe('mcp_a_b_c_3');
+      const long = qualifyToolName('s', 'x'.repeat(100), new Set());
+      expect(long).toHaveLength(64);
+      const longDup = qualifyToolName('s', 'x'.repeat(100), new Set([long]));
+      expect(longDup).toHaveLength(64);
+      expect(longDup.endsWith('_2')).toBe(true);
+    });
+
+    it('registers distinct valid names for colliding tools and still dispatches by bare name', async () => {
+      mockClient.listTools.mockResolvedValue({
+        tools: [
+          { name: 'get.item', inputSchema: { type: 'object', properties: {} } },
+          { name: 'get/item', inputSchema: { type: 'object', properties: {} } },
+        ],
+      });
+      await manager.connect({ 'my server': { command: 'echo' } });
+
+      const names = manager.getToolDefinitions().map((d) => d.name);
+      expect(names).toEqual(['mcp_my_server_get_item', 'mcp_my_server_get_item_2']);
+      expect(names.every((n) => /^[A-Za-z0-9_-]{1,64}$/.test(n))).toBe(true);
+      expect(manager.getServerToolNames('my server')).toEqual(['get.item', 'get/item']);
+
+      await manager.callServerTool('my server', 'get/item', {});
+      expect(mockClient.callTool).toHaveBeenCalledWith({ name: 'get/item', arguments: {} });
+    });
+  });
+
+  it('does not bring back a server disconnected while it was still connecting (#120)', async () => {
+    vi.useFakeTimers();
+    try {
+      let fail!: (e: Error) => void;
+      mockClient.connect.mockImplementationOnce(() => new Promise((_r, reject) => (fail = reject)));
+      const connecting = manager.connect({ slow: { command: 'echo' } });
+      await vi.waitFor(() => expect(mockClient.connect).toHaveBeenCalled());
+
+      await manager.disconnect();
+      fail(new Error('closed'));
+      await connecting;
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(manager.getServerNames()).toEqual([]);
+      expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('finds tool by prefixed name', async () => {
