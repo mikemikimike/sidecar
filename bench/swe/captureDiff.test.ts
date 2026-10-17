@@ -61,6 +61,18 @@ describe('captureDiff', () => {
     expect(dropped).toEqual([{ path: 'test_bug.py', reason: 'missing-untracked' }]);
   });
 
+  // #195's first acceptance criterion, as one case: both triggers in one run.
+  it('captures the valid edit alongside an outside path and a removed scratch file (#195)', () => {
+    write('pkg/mod.py', 'x = 2\n');
+    write('test_fix.py', 'assert True\n');
+    fs.rmSync(path.join(dir, 'test_fix.py'));
+    const outside = path.join(os.tmpdir(), 'test_lowercase_qdp.py');
+    const { patch, dropped } = captureDiff(dir, base, [outside, 'test_fix.py', 'pkg/mod.py']);
+    expect(patch).toContain('-x = 1');
+    expect(patch).toContain('+x = 2');
+    expect(dropped.map((d) => d.reason).sort()).toEqual(['missing-untracked', 'outside-repo']);
+  });
+
   it('shows a tracked file the agent deleted as a deletion', () => {
     fs.rmSync(path.join(dir, 'pkg/gone.py'));
     const { patch, dropped } = captureDiff(dir, base, ['pkg/gone.py']);
