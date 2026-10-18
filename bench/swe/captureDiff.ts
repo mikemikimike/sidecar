@@ -18,6 +18,8 @@ export interface CapturedDiff {
 export interface ShellChangeSnapshot {
   head: string;
   status: string;
+  trackedPaths: string[];
+  untrackedPaths: string[];
 }
 
 export interface ShellChangeDrift {
@@ -34,6 +36,8 @@ export interface ShellChangeDrift {
   baseTrackedPathCount?: number;
 }
 
+// The hard cap also catches broad drift such as django-10914's 256 changed files
+// in a repository with roughly 6,000 tracked files.
 const MAX_SHELL_CHANGED_PATHS = 100;
 const WIDESPREAD_CHANGE_RATIO = 0.5;
 const MIN_TRACKED_PATHS_FOR_WIDESPREAD_CHECK = 20;
@@ -66,6 +70,8 @@ export function snapshotShellWorkspace(dir: string): ShellChangeSnapshot {
   return {
     head: git(['rev-parse', 'HEAD'], dir).trim(),
     status: git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], dir),
+    trackedPaths: nulPaths(git(['diff', '--name-only', '-z', 'HEAD', '--'], dir)),
+    untrackedPaths: nulPaths(git(['ls-files', '--others', '--exclude-standard', '-z'], dir)),
   };
 }
 
@@ -78,7 +84,7 @@ function discoverShellChangedPaths(
 ): { paths: string[]; drift?: ShellChangeDrift } {
   if (!shellProcessesStopped) return { paths: [], drift: { reason: 'process-still-running', pathCount: 0 } };
   if (!snapshot) return { paths: [], drift: { reason: 'snapshot-unavailable', pathCount: 0 } };
-  if (snapshot.status) {
+  if (snapshot.trackedPaths.length > 0) {
     return {
       paths: [],
       drift: { reason: 'dirty-at-start', pathCount: nulPaths(snapshot.status).length },
@@ -101,12 +107,15 @@ function discoverShellChangedPaths(
 
   const tracked = nulPaths(git(['diff', '--name-only', '-z', baseCommit, '--'], dir));
   const untracked = nulPaths(git(['ls-files', '--others', '--exclude-standard', '-z'], dir));
+  // Exclude setup artifacts already present at the snapshot; later non-ignored
+  // files remain part of the patch, including scratch files left by shell work.
+  const baselineUntracked = new Set(snapshot.untrackedPaths);
   const normalizedToolPaths = new Set(
     [...touchedPaths]
       .map((filePath) => repoRelativePath(dir, filePath))
       .filter((filePath): filePath is string => filePath !== null),
   );
-  const paths = [...new Set([...tracked, ...untracked])].sort();
+  const paths = [...new Set([...tracked, ...untracked.filter((filePath) => !baselineUntracked.has(filePath))])].sort();
   const shellChanged = paths.filter((filePath) => !normalizedToolPaths.has(filePath));
   const shellTracked = tracked.filter((filePath) => !normalizedToolPaths.has(filePath));
 
