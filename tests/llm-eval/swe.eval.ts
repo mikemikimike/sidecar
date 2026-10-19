@@ -516,10 +516,12 @@ async function solve(task: SweTask, arm: ArmName): Promise<SwePrediction> {
     // not the old keyword-ranked file heads.
     const repoIndex = await getRepoIndex(task.repo, dir);
     toolRuntime.symbolEmbeddings = repoIndex;
-    try {
-      workspaceSnapshot = snapshotShellWorkspace(dir);
-    } catch {
-      shellChangeDrift = { reason: 'snapshot-unavailable', pathCount: 0 };
+    if (process.env.SIDECAR_SWE_SHELL_CAPTURE === '1') {
+      try {
+        workspaceSnapshot = snapshotShellWorkspace(dir);
+      } catch {
+        shellChangeDrift = { reason: 'snapshot-unavailable', pathCount: 0 };
+      }
     }
     const retrieval = await retrieveContext(repoIndex, task.problem_statement, dir, RETRIEVAL_TOPK, CLIFF_GATE);
     retrievalRecall = task.patch ? goldFilesInTopK(retrieval.hits, task.patch).recalled : undefined;

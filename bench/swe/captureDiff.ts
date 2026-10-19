@@ -200,7 +200,7 @@ export function captureDiff(
   }
 
   const discovered =
-    snapshot === undefined
+    snapshot === undefined || process.env.SIDECAR_SWE_SHELL_CAPTURE !== '1'
       ? { paths: [] }
       : discoverShellChangedPaths(root, baseCommit, touchedPaths, snapshot, shellProcessesStopped);
   for (const filePath of discovered.paths) kept.add(filePath);
